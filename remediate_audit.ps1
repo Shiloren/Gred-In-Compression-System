@@ -4,13 +4,25 @@ $ErrorActionPreference = "Stop"
 Write-Host ">>> [AUDIT] Starting Pre-flight Checks..." -ForegroundColor Cyan
 
 # Check Clean Git
-$gitStatus = git status --porcelain
-if ($gitStatus) {
-    Write-Error "OSTILE AUDIT ABORT: Git working tree is dirty. Commit or stash changes before running Critical Gate."
+try {
+    $gitStatus = git status --porcelain 2>&1
+}
+catch {
+    Write-Warning "Git command failed or wrote to stderr: $_"
+    $gitStatus = $null
+}
+
+if ($gitStatus -and "$gitStatus".Trim() -ne "") {
+    Write-Error "OSTILE AUDIT ABORT: Git working tree is dirty. Commit or stash changes before running Critical Gate.`nStatus: $gitStatus"
 }
 
 # Capture Environment
-$commitHash = git rev-parse HEAD
+try {
+    $commitHash = git rev-parse HEAD 2>&1
+}
+catch {
+    $commitHash = "UNKNOWN"
+}
 $nodeVersion = node -v
 $npmVersion = npm -v
 $timestamp = Get-Date -Format "yyyyMMdd-HHmmss"
