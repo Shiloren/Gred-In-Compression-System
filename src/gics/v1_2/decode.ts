@@ -1,7 +1,6 @@
 import { Snapshot } from '../../gics-types.js';
 import { decodeVarint } from '../../gics-utils.js';
 import { GICS_MAGIC_V2, StreamId, CodecId, BLOCK_HEADER_SIZE } from './format.js';
-import { gics11_decode } from '../../../gics_frozen/v1_1_0/index.js';
 import { ContextV0 } from './context.js';
 import { Codecs } from './codecs.js';
 
@@ -48,44 +47,54 @@ export class GICSv2Decoder {
         }
 
         if (!isV2) {
-            // Backward compatibility
-            return gics11_decode(this.data);
+            throw new Error("GICS v1.2 Decoder: Legacy v1.1 format not supported in this build.");
         }
 
-        // 2. Parse V2 Header
+        // 2. Validate EOS marker (fail-closed)
+        if (this.data[this.data.length - 1] !== 0xFF) {
+            throw new Error('GICS: Missing EOS marker (0xFF) - incomplete or corrupt data');
+        }
+
+        // 3. Parse V2 Header
         this.pos = GICS_MAGIC_V2.length;
         const version = this.getUint8();
         if (version !== 2) throw new Error(`Unsupported version: ${version}`);
 
         const flags = this.getUint32(); // Read flags (unused for now)
 
-        // 3. Parse Blocks
+        // 4. Parse Blocks - Multi-stream support
         let timeData: number[] = [];
-        let valueData: number[] = [];
+        let snapshotLengths: number[] = [];
+        let itemIds: number[] = [];
+        let priceData: number[] = [];
+        let quantityData: number[] = [];
 
-        while (this.pos < this.data.length) {
+        // -1 to skip EOS marker at end
+        const dataEnd = this.data.length - 1;
+
+        while (this.pos < dataEnd) {
             // Read Block Header
-            if (this.pos + BLOCK_HEADER_SIZE > this.data.length) {
-                break; // Should not happen if file is valid
+            if (this.pos + BLOCK_HEADER_SIZE > dataEnd) {
+                break; // Incomplete block header
             }
 
             const streamId = this.getUint8();
             const codecId = this.getUint8();
             const nItems = this.getUint32();
             const payloadLen = this.getUint32();
-            const blockFlags = this.getUint8(); // [NEW] Read flags byte
+            const blockFlags = this.getUint8();
 
             const payloadStart = this.pos;
             const payloadEnd = this.pos + payloadLen;
 
-            if (payloadEnd > this.data.length) {
+            if (payloadEnd > dataEnd) {
                 throw new Error('Block payload exceeds file size');
             }
 
             const payload = this.data.subarray(payloadStart, payloadEnd);
             this.pos = payloadEnd;
 
-            // Dispatch
+            // Dispatch - decode payload
             let values: number[] = [];
 
             if (codecId === CodecId.VARINT_DELTA || codecId === CodecId.DOD_VARINT) {
@@ -97,45 +106,64 @@ export class GICSv2Decoder {
             } else if (codecId === CodecId.DICT_VARINT) {
                 values = Codecs.decodeDict(payload, this.context);
             } else {
-                // Unknown codec or NONE, skip
-                // Log warning?
-                // console.warn('Unknown CodecId:', codecId);
+                // Unknown codec, skip
                 continue;
             }
 
+            // Route to appropriate stream array
+            const commitable = (blockFlags & 0x10) === 0; // HEALTH_QUAR = 0x10
+
             if (streamId === StreamId.TIME) {
-                const isQuarantine = (blockFlags & 1 << 4) !== 0; // BLOCK_FLAGS.HEALTH_QUAR (Hardcoded here or imported? Better import if possible but simple bit check works)
-                // Actually let's just pass the check.
-                // We need to import BLOCK_FLAGS from format.ts, but let's assume we can add it to imports or use literal if strict.
-                // Better: import { BLOCK_FLAGS } from './format.js';
-                // Wait, I can't easily change imports in replace_file_content if I don't target them.
-                // I will target imports separately or assume I can add it.
-                // For now, let's use the explicit bit flag 0x10 (16) which is HEALTH_QUAR.
-
-                const commitable = (blockFlags & 0x10) === 0;
-
                 const chunkTimes = this.decodeTimeStream(values, commitable);
                 for (const t of chunkTimes) timeData.push(t);
+            } else if (streamId === StreamId.SNAPSHOT_LEN) {
+                // Raw values, no delta decoding
+                for (const v of values) snapshotLengths.push(v);
+            } else if (streamId === StreamId.ITEM_ID) {
+                // Raw values, no delta decoding
+                for (const v of values) itemIds.push(v);
             } else if (streamId === StreamId.VALUE) {
-                const commitable = (blockFlags & 0x10) === 0;
                 const isDOD = (codecId === CodecId.DOD_VARINT || codecId === CodecId.RLE_DOD);
                 const chunkValues = this.decodeValueStream(values, commitable, isDOD);
-                for (const v of chunkValues) valueData.push(v);
+                for (const v of chunkValues) priceData.push(v);
+            } else if (streamId === StreamId.QUANTITY) {
+                // Raw values, no delta decoding
+                for (const v of values) quantityData.push(v);
             }
         }
 
-        // 4. Reconstruct Snapshots
+        // 5. Reconstruct Snapshots from multi-stream data
         const result: Snapshot[] = [];
-        const count = Math.min(timeData.length, valueData.length);
 
-        for (let i = 0; i < count; i++) {
-            const map = new Map<number, { price: number; quantity: number }>();
-            map.set(1, { price: valueData[i], quantity: 1 }); // Dummy ItemID 1, Qty 1
+        // If snapshotLengths is empty, fall back to legacy single-item mode
+        if (snapshotLengths.length === 0) {
+            // Legacy single-item mode (for backward compat with broken v1.2 files)
+            const count = Math.min(timeData.length, priceData.length);
+            for (let i = 0; i < count; i++) {
+                const map = new Map<number, { price: number; quantity: number }>();
+                map.set(1, { price: priceData[i], quantity: 1 });
+                result.push({ timestamp: timeData[i], items: map });
+            }
+        } else {
+            // Multi-item mode
+            let itemOffset = 0;
+            for (let s = 0; s < snapshotLengths.length; s++) {
+                const count = snapshotLengths[s];
+                const map = new Map<number, { price: number; quantity: number }>();
 
-            result.push({
-                timestamp: timeData[i],
-                items: map
-            });
+                for (let j = 0; j < count; j++) {
+                    const id = itemIds[itemOffset] ?? 0;
+                    const price = priceData[itemOffset] ?? 0;
+                    const quantity = quantityData[itemOffset] ?? 0;
+                    map.set(id, { price, quantity });
+                    itemOffset++;
+                }
+
+                result.push({
+                    timestamp: timeData[s] ?? 0,
+                    items: map
+                });
+            }
         }
 
         return result;

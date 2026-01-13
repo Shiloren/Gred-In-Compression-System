@@ -1,5 +1,5 @@
 import { encodeVarint } from '../../gics-utils.js';
-import { GICS_MAGIC_V2, V12_FLAGS, StreamId, CodecId, GICS_VERSION_BYTE, BLOCK_HEADER_SIZE } from './format.js';
+import { GICS_MAGIC_V2, V12_FLAGS, StreamId, CodecId, GICS_VERSION_BYTE, BLOCK_HEADER_SIZE, HealthTag } from './format.js';
 import { ContextV0 } from './context.js';
 import { calculateBlockMetrics, classifyRegime } from './metrics.js';
 import { Codecs } from './codecs.js';
@@ -10,8 +10,8 @@ const BLOCK_SIZE = 1000;
 // User Requirement: Strict Safe Logic selection.
 const SAFE_CODEC_TIME = CodecId.DOD_VARINT;
 const SAFE_CODEC_VALUE = CodecId.VARINT_DELTA;
-export class GICSv2Engine {
-    frames = [];
+export class GICSv2Encoder {
+    snapshots = [];
     context;
     chm;
     mode;
@@ -22,11 +22,11 @@ export class GICSv2Engine {
     static sharedContext = null;
     static sharedCHM = null;
     static reset() {
-        GICSv2Engine.sharedContext = null;
-        GICSv2Engine.sharedCHM = null;
+        GICSv2Encoder.sharedContext = null;
+        GICSv2Encoder.sharedCHM = null;
     }
     static resetSharedContext() {
-        GICSv2Engine.reset();
+        GICSv2Encoder.reset();
     }
     constructor() {
         if (process.env.GICS_TEST_RUN_ID) {
@@ -43,48 +43,55 @@ export class GICSv2Engine {
             this.chm = new HealthMonitor(this.runId, probeInterval);
         }
         else {
-            if (!GICSv2Engine.sharedContext) {
-                GICSv2Engine.sharedContext = new ContextV0('hash_placeholder');
+            if (!GICSv2Encoder.sharedContext) {
+                GICSv2Encoder.sharedContext = new ContextV0('hash_placeholder');
             }
-            this.context = GICSv2Engine.sharedContext;
-            if (!GICSv2Engine.sharedCHM) {
+            this.context = GICSv2Encoder.sharedContext;
+            if (!GICSv2Encoder.sharedCHM) {
                 const envProbe = process.env.GICS_PROBE_INTERVAL;
                 const probeInterval = (envProbe !== undefined && envProbe !== '') ? parseInt(envProbe, 10) : 4;
-                GICSv2Engine.sharedCHM = new HealthMonitor(this.runId, probeInterval);
+                GICSv2Encoder.sharedCHM = new HealthMonitor(this.runId, probeInterval);
             }
-            this.chm = GICSv2Engine.sharedCHM;
+            this.chm = GICSv2Encoder.sharedCHM;
         }
     }
-    async addFrame(frame) {
+    async addSnapshot(snapshot) {
         if (this.isFinalized)
-            throw new Error("GICSv2Engine: Cannot append after finalize()");
-        this.frames.push(frame);
+            throw new Error("GICSv2Encoder: Cannot append after finalize()");
+        this.snapshots.push(snapshot);
     }
     getTelemetry() {
         return this.lastTelemetry;
     }
     /**
-     * FLUSH: Process buffered frames, emit bytes, maintain state.
+     * FLUSH: Process buffered snapshots, emit bytes, maintain state.
      */
     async flush() {
         if (this.isFinalized)
-            throw new Error("GICSv2Engine: Cannot flush after finalize()");
-        if (this.frames.length === 0) {
+            throw new Error("GICSv2Encoder: Cannot flush after finalize()");
+        if (this.snapshots.length === 0) {
             return new Uint8Array(0);
         }
         const blocks = [];
         const blockStats = [];
-        // Process frames
+        // Process snapshots - MULTI-ITEM with deterministic ordering
         const timestamps = [];
-        const values = [];
-        for (const f of this.frames) {
-            timestamps.push(f.timestamp);
-            // Agnostic Core: We expect 'val' stream for primary value, or default 0.
-            // Ideally configurabe, but 'val' is the canonical agreement for single-value GICS v1.2.
-            const v = f.streams['val'] !== undefined ? f.streams['val'] : 0;
-            values.push(v);
+        const snapshotLengths = []; // Items per snapshot
+        const itemIds = []; // All item IDs (flattened)
+        const prices = []; // All prices (flattened)
+        const quantities = []; // All quantities (flattened)
+        for (const s of this.snapshots) {
+            timestamps.push(s.timestamp);
+            // Sort items by ID for determinism (Map iteration order is not guaranteed)
+            const sortedItems = [...s.items.entries()].sort((a, b) => a[0] - b[0]);
+            snapshotLengths.push(sortedItems.length);
+            for (const [id, data] of sortedItems) {
+                itemIds.push(id);
+                prices.push(data.price);
+                quantities.push(data.quantity);
+            }
         }
-        this.frames = [];
+        this.snapshots = [];
         // Helper to process a block
         const PROBE_INTERVAL = this.chm.PROBE_INTERVAL;
         // Updated Signature: accepts stateSnapshot (ContextSnapshot)
@@ -253,12 +260,82 @@ export class GICSv2Engine {
             const deltas = this.computeTimeDeltas(chunk, true); // Updates Context TS to END
             processBlock(StreamId.TIME, chunk, deltas, snapshot);
         }
-        // Create Value Blocks
-        for (let i = 0; i < values.length; i += BLOCK_SIZE) {
-            const chunk = values.slice(i, i + BLOCK_SIZE);
+        // Create SNAPSHOT_LEN Blocks (items per snapshot - 1:1 with timestamps)
+        for (let i = 0; i < snapshotLengths.length; i += BLOCK_SIZE) {
+            const chunk = snapshotLengths.slice(i, i + BLOCK_SIZE);
+            const snapshot = this.context.snapshot();
+            // SNAPSHOT_LEN uses simple varint encoding (no delta context needed)
+            const encoded = encodeVarint(chunk);
+            const block = this.createBlock(StreamId.SNAPSHOT_LEN, CodecId.VARINT_DELTA, chunk.length, encoded, 0);
+            blocks.push(block);
+            blockStats.push({
+                stream_id: StreamId.SNAPSHOT_LEN,
+                codec: CodecId.VARINT_DELTA,
+                bytes: block.length,
+                raw_bytes: chunk.length * 8,
+                header_bytes: BLOCK_HEADER_SIZE,
+                payload_bytes: encoded.length,
+                params: { decision: 'CORE', reason: null },
+                flags: 0,
+                health: HealthTag.OK,
+                ratio: (chunk.length * 8) / block.length,
+                trainBaseline: true,
+                metrics: calculateBlockMetrics(chunk),
+                regime: classifyRegime(calculateBlockMetrics(chunk))
+            });
+        }
+        // Create ITEM_ID Blocks (all item IDs flattened)
+        for (let i = 0; i < itemIds.length; i += BLOCK_SIZE) {
+            const chunk = itemIds.slice(i, i + BLOCK_SIZE);
+            const snapshot = this.context.snapshot();
+            const encoded = encodeVarint(chunk);
+            const block = this.createBlock(StreamId.ITEM_ID, CodecId.VARINT_DELTA, chunk.length, encoded, 0);
+            blocks.push(block);
+            blockStats.push({
+                stream_id: StreamId.ITEM_ID,
+                codec: CodecId.VARINT_DELTA,
+                bytes: block.length,
+                raw_bytes: chunk.length * 8,
+                header_bytes: BLOCK_HEADER_SIZE,
+                payload_bytes: encoded.length,
+                params: { decision: 'CORE', reason: null },
+                flags: 0,
+                health: HealthTag.OK,
+                ratio: (chunk.length * 8) / block.length,
+                trainBaseline: true,
+                metrics: calculateBlockMetrics(chunk),
+                regime: classifyRegime(calculateBlockMetrics(chunk))
+            });
+        }
+        // Create VALUE Blocks (prices - using existing compressible pipeline)
+        for (let i = 0; i < prices.length; i += BLOCK_SIZE) {
+            const chunk = prices.slice(i, i + BLOCK_SIZE);
             const snapshot = this.context.snapshot(); // Capture START state
             const deltas = this.computeValueDeltas(chunk, true); // Updates Context to END
             processBlock(StreamId.VALUE, chunk, deltas, snapshot);
+        }
+        // Create QUANTITY Blocks (all quantities flattened)
+        for (let i = 0; i < quantities.length; i += BLOCK_SIZE) {
+            const chunk = quantities.slice(i, i + BLOCK_SIZE);
+            const snapshot = this.context.snapshot();
+            const encoded = encodeVarint(chunk);
+            const block = this.createBlock(StreamId.QUANTITY, CodecId.VARINT_DELTA, chunk.length, encoded, 0);
+            blocks.push(block);
+            blockStats.push({
+                stream_id: StreamId.QUANTITY,
+                codec: CodecId.VARINT_DELTA,
+                bytes: block.length,
+                raw_bytes: chunk.length * 8,
+                header_bytes: BLOCK_HEADER_SIZE,
+                payload_bytes: encoded.length,
+                params: { decision: 'CORE', reason: null },
+                flags: 0,
+                health: HealthTag.OK,
+                ratio: (chunk.length * 8) / block.length,
+                trainBaseline: true,
+                metrics: calculateBlockMetrics(chunk),
+                regime: classifyRegime(calculateBlockMetrics(chunk))
+            });
         }
         // --- Header Handling ---
         let result;
@@ -273,7 +350,8 @@ export class GICSv2Engine {
             new DataView(headerBytes.buffer).setUint32(5, V12_FLAGS.FIELDWISE_TS, true);
             this.hasEmittedHeader = true;
         }
-        const size = (headerBytes ? headerSize : 0) + totalPayloadSize;
+        // +1 for EOS marker
+        const size = (headerBytes ? headerSize : 0) + totalPayloadSize + 1;
         result = new Uint8Array(size);
         let pos = 0;
         if (headerBytes) {
@@ -284,6 +362,8 @@ export class GICSv2Engine {
             result.set(b, pos);
             pos += b.length;
         }
+        // Write EOS marker (0xFF) for fail-closed validation
+        result[pos] = 0xFF;
         const chmStats = this.chm.getStats();
         const coreRatio = chmStats.core_output_bytes > 0 ? (chmStats.core_input_bytes / chmStats.core_output_bytes) : 0;
         const quarRate = this.chm.getTotalBlocks() > 0 ? (chmStats.quar_blocks / this.chm.getTotalBlocks()) : 0;
@@ -301,24 +381,27 @@ export class GICSv2Engine {
         return result;
     }
     /**
-     * FINALIZE: Seal the stream, write Manifest/Sidecar.
+     * FINALIZE: Seal the stream, optionally write Manifest/Sidecar.
      */
     async finalize() {
         if (this.isFinalized)
-            throw new Error("GICSv2Engine: Finalize called twice!");
+            throw new Error("GICSv2Encoder: Finalize called twice!");
         const report = this.chm.getReport();
         const filename = `gics-anomalies.${this.runId}.json`;
-        try {
-            const cwd = process.cwd();
-            fs.writeFileSync(path.join(cwd, filename), JSON.stringify(report, null, 2));
-        }
-        catch (e) {
-            console.error("Failed to write sidecar report", e);
+        // Only write sidecar if GICS_SIDECAR_PATH is set (avoid CWD pollution)
+        const sidecarPath = process.env.GICS_SIDECAR_PATH;
+        if (sidecarPath) {
+            try {
+                fs.writeFileSync(path.join(sidecarPath, filename), JSON.stringify(report, null, 2));
+            }
+            catch (e) {
+                console.error("Failed to write sidecar report", e);
+            }
         }
         this.context = null;
         this.isFinalized = true;
         if (this.lastTelemetry) {
-            this.lastTelemetry.sidecar = filename;
+            this.lastTelemetry.sidecar = sidecarPath ? filename : null;
         }
     }
     // Compatibility for Benchmark Harness

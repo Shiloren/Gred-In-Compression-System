@@ -6,16 +6,20 @@ import * as path from 'path';
 describe('GICS v1.2 Determinism', () => {
     const TEST_RUN_ID = 'test_run_fixed_123';
     let originalRunIdEnv: string | undefined;
+    let originalSidecarPathEnv: string | undefined;
 
     beforeEach(() => {
         // Enforce Determinism
         originalRunIdEnv = process.env.GICS_TEST_RUN_ID;
+        originalSidecarPathEnv = process.env.GICS_SIDECAR_PATH;
         process.env.GICS_TEST_RUN_ID = TEST_RUN_ID;
+        process.env.GICS_SIDECAR_PATH = process.cwd(); // Enable sidecar writing for this test
         GICSv2Encoder.reset();
     });
 
     afterEach(() => {
         process.env.GICS_TEST_RUN_ID = originalRunIdEnv;
+        process.env.GICS_SIDECAR_PATH = originalSidecarPathEnv;
         GICSv2Encoder.reset();
         // Cleanup sidecars
         const cwd = process.cwd();

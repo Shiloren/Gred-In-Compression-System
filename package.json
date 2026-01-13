@@ -1,10 +1,14 @@
 {
     "name": "gics-core",
-    "version": "1.1.0",
+    "version": "1.2.0",
     "description": "GICS: Gaming Integrity & Compression System (Generic Core)",
     "type": "module",
-    "main": "dist/index.js",
-    "types": "dist/index.d.ts",
+    "main": "dist/src/index.js",
+    "types": "dist/src/index.d.ts",
+    "files": [
+        "dist",
+        "README.md"
+    ],
     "scripts": {
         "build": "tsc",
         "test": "vitest run"

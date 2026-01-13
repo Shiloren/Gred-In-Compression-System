@@ -1,4 +1,4 @@
-import { GicsFrame } from '../../gics-canonical.js';
+import { Snapshot } from '../../gics-types.js';
 export declare class GICSv2Decoder {
     private data;
     private pos;
@@ -6,7 +6,7 @@ export declare class GICSv2Decoder {
     private static sharedContext;
     static resetSharedContext(): void;
     constructor(data: Uint8Array);
-    getAllFrames(): Promise<GicsFrame[]>;
+    getAllSnapshots(): Promise<Snapshot[]>;
     private decodeTimeStream;
     private decodeValueStream;
     private getUint8;

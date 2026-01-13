@@ -1,6 +1,6 @@
-import { GicsFrame } from '../../gics-canonical.js';
-export declare class GICSv2Engine {
-    private frames;
+import { Snapshot } from '../../gics-types.js';
+export declare class GICSv2Encoder {
+    private snapshots;
     private context;
     private chm;
     private mode;
@@ -13,14 +13,14 @@ export declare class GICSv2Engine {
     static reset(): void;
     static resetSharedContext(): void;
     constructor();
-    addFrame(frame: GicsFrame): Promise<void>;
+    addSnapshot(snapshot: Snapshot): Promise<void>;
     getTelemetry(): any;
     /**
-     * FLUSH: Process buffered frames, emit bytes, maintain state.
+     * FLUSH: Process buffered snapshots, emit bytes, maintain state.
      */
     flush(): Promise<Uint8Array>;
     /**
-     * FINALIZE: Seal the stream, write Manifest/Sidecar.
+     * FINALIZE: Seal the stream, optionally write Manifest/Sidecar.
      */
     finalize(): Promise<void>;
     finish(): Promise<Uint8Array>;

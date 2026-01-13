@@ -16,11 +16,12 @@ export function encodeVarint(values) {
     const buffer = [];
     for (const val of values) {
         // Zigzag encode: map signed to unsigned (negative numbers close to 0)
-        let n = val >= 0 ? val * 2 : (val * -2) - 1;
-        // Variable-length encoding (Arithmetic to support > 32-bit integers)
-        while (n >= 128) {
-            buffer.push((n % 128) | 128);
-            n = Math.floor(n / 128);
+        const zigzag = val >= 0 ? val * 2 : (val * -2) - 1;
+        // Variable-length encoding
+        let n = zigzag;
+        while (n >= 0x80) {
+            buffer.push((n & 0x7F) | 0x80);
+            n >>>= 7;
         }
         buffer.push(n);
     }
@@ -34,16 +35,16 @@ export function decodeVarint(data) {
     let i = 0;
     while (i < data.length) {
         let zigzag = 0;
-        let shift = 1;
+        let shift = 0;
         while (i < data.length) {
             const byte = data[i++];
-            zigzag += (byte & 0x7F) * shift;
+            zigzag |= (byte & 0x7F) << shift;
             if ((byte & 0x80) === 0)
                 break;
-            shift *= 128;
+            shift += 7;
         }
         // Decode zigzag
-        const val = (zigzag % 2 === 0) ? (zigzag / 2) : -(zigzag + 1) / 2;
+        const val = (zigzag >>> 1) ^ -(zigzag & 1);
         values.push(val);
     }
     return values;

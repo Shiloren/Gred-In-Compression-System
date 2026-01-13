@@ -1,9 +1,12 @@
 export declare const GICS_MAGIC_V2: Uint8Array<ArrayBuffer>;
 export declare const GICS_VERSION_BYTE = 2;
 export declare enum StreamId {
-    TIME = 10,// Arbitrary IDs to avoid confusion with 0
-    VALUE = 20,
-    META = 30
+    TIME = 10,// Timestamps (1:1 with snapshots)
+    VALUE = 20,// Prices (1:1 with items)
+    META = 30,// Reserved
+    ITEM_ID = 40,// Item IDs (1:1 with items)
+    QUANTITY = 50,// Quantities (1:1 with items)
+    SNAPSHOT_LEN = 60
 }
 export declare enum CodecId {
     NONE = 0,
@@ -44,3 +47,4 @@ export declare enum RecoveryAction {
     RETRY = "RETRY",
     IGNORE = "IGNORE"
 }
+export declare const GICS_EOS_MARKER = 255;

@@ -1,23 +1,5 @@
 import { decodeVarint } from '../../gics-utils.js';
 import { GICS_MAGIC_V2, StreamId, CodecId, BLOCK_HEADER_SIZE } from './format.js';
-// Dilemma: gics11_decode logic.
-// If v2Decoder falls back to v1.1, it delegates.
-// If v2Decoder signature is `getAllFrames(): GicsFrame[]`, then v1.1 output must be converted.
-// But we cannot import adapter in Core.
-// Resolution: gics-core v1.2 should ONLY handle v1.2?
-// L52: return gics11_decode(this.data);
-// gics11_decode returns `Snapshot[]`.
-// Use `any` cast or refactor later?
-// Prompt says: "Core stays clean".
-// I will change return type to `Promise<GicsFrame[] | any[]>` or just `Promise<GicsFrame[]>`.
-// And I will COMMENT OUT the v1.1 fallback or make it throw "Legacy version not supported in Agnostic Engine"?
-// "Keep backward compatibility via adapters".
-// Adapters are external.
-// So `GICSv2Decoder` should strictly handle v2.
-// The fallback to v1.1 L52 was convenience.
-// I will REMOVE v1.1 fallback from Agnostic Decoder. It creates dependency on frozen legacy code.
-// The Wrapper can handle version sniffing?
-// Yes.
 import { ContextV0 } from './context.js';
 import { Codecs } from './codecs.js';
 export class GICSv2Decoder {
@@ -41,7 +23,7 @@ export class GICSv2Decoder {
             this.context = GICSv2Decoder.sharedContext;
         }
     }
-    async getAllFrames() {
+    async getAllSnapshots() {
         // 1. Check Magic
         if (this.data.length < GICS_MAGIC_V2.length) {
             throw new Error('Data too short');
@@ -55,36 +37,44 @@ export class GICSv2Decoder {
             }
         }
         if (!isV2) {
-            // Agnostic Engine: Strictly v2+. Legacy formats should be handled by legacy wrappers.
-            throw new Error("GICSv2Decoder: Only v2 format supported in agnostic engine.");
+            throw new Error("GICS v1.2 Decoder: Legacy v1.1 format not supported in this build.");
         }
-        // 2. Parse V2 Header
+        // 2. Validate EOS marker (fail-closed)
+        if (this.data[this.data.length - 1] !== 0xFF) {
+            throw new Error('GICS: Missing EOS marker (0xFF) - incomplete or corrupt data');
+        }
+        // 3. Parse V2 Header
         this.pos = GICS_MAGIC_V2.length;
         const version = this.getUint8();
         if (version !== 2)
             throw new Error(`Unsupported version: ${version}`);
         const flags = this.getUint32(); // Read flags (unused for now)
-        // 3. Parse Blocks
+        // 4. Parse Blocks - Multi-stream support
         let timeData = [];
-        let valueData = [];
-        while (this.pos < this.data.length) {
+        let snapshotLengths = [];
+        let itemIds = [];
+        let priceData = [];
+        let quantityData = [];
+        // -1 to skip EOS marker at end
+        const dataEnd = this.data.length - 1;
+        while (this.pos < dataEnd) {
             // Read Block Header
-            if (this.pos + BLOCK_HEADER_SIZE > this.data.length) {
-                break; // Should not happen if file is valid
+            if (this.pos + BLOCK_HEADER_SIZE > dataEnd) {
+                break; // Incomplete block header
             }
             const streamId = this.getUint8();
             const codecId = this.getUint8();
             const nItems = this.getUint32();
             const payloadLen = this.getUint32();
-            const blockFlags = this.getUint8(); // [NEW] Read flags byte
+            const blockFlags = this.getUint8();
             const payloadStart = this.pos;
             const payloadEnd = this.pos + payloadLen;
-            if (payloadEnd > this.data.length) {
+            if (payloadEnd > dataEnd) {
                 throw new Error('Block payload exceeds file size');
             }
             const payload = this.data.subarray(payloadStart, payloadEnd);
             this.pos = payloadEnd;
-            // Dispatch
+            // Dispatch - decode payload
             let values = [];
             if (codecId === CodecId.VARINT_DELTA || codecId === CodecId.DOD_VARINT) {
                 values = decodeVarint(payload);
@@ -99,42 +89,68 @@ export class GICSv2Decoder {
                 values = Codecs.decodeDict(payload, this.context);
             }
             else {
+                // Unknown codec, skip
                 continue;
             }
+            // Route to appropriate stream array
+            const commitable = (blockFlags & 0x10) === 0; // HEALTH_QUAR = 0x10
             if (streamId === StreamId.TIME) {
-                const commitable = (blockFlags & 0x10) === 0;
                 const chunkTimes = this.decodeTimeStream(values, commitable);
                 for (const t of chunkTimes)
                     timeData.push(t);
             }
+            else if (streamId === StreamId.SNAPSHOT_LEN) {
+                // Raw values, no delta decoding
+                for (const v of values)
+                    snapshotLengths.push(v);
+            }
+            else if (streamId === StreamId.ITEM_ID) {
+                // Raw values, no delta decoding
+                for (const v of values)
+                    itemIds.push(v);
+            }
             else if (streamId === StreamId.VALUE) {
-                const commitable = (blockFlags & 0x10) === 0;
                 const isDOD = (codecId === CodecId.DOD_VARINT || codecId === CodecId.RLE_DOD);
                 const chunkValues = this.decodeValueStream(values, commitable, isDOD);
                 for (const v of chunkValues)
-                    valueData.push(v);
+                    priceData.push(v);
+            }
+            else if (streamId === StreamId.QUANTITY) {
+                // Raw values, no delta decoding
+                for (const v of values)
+                    quantityData.push(v);
             }
         }
-        // 4. Reconstruct Canonical Frames
+        // 5. Reconstruct Snapshots from multi-stream data
         const result = [];
-        const count = Math.min(timeData.length, valueData.length);
-        for (let i = 0; i < count; i++) {
-            // Agnostic Reconstruction
-            // We produce a frame with 'val' stream (implicit v1.2 contract).
-            // EntityID is not in the file?
-            // "GICS Format.. includes context_id?"
-            // Header has contextId?
-            // For now, EntityId is unknown. Adapter can fill it. Used "1" in legacy.
-            // Core will use "ENTITY_UNKNOWN" or "DEFAULT".
-            // Since Core v1.2 is Single Context, we can assume one entity per stream?
-            // Let's use "0" or "unknown".
-            result.push({
-                entityId: "0",
-                timestamp: timeData[i],
-                streams: {
-                    'val': valueData[i]
+        // If snapshotLengths is empty, fall back to legacy single-item mode
+        if (snapshotLengths.length === 0) {
+            // Legacy single-item mode (for backward compat with broken v1.2 files)
+            const count = Math.min(timeData.length, priceData.length);
+            for (let i = 0; i < count; i++) {
+                const map = new Map();
+                map.set(1, { price: priceData[i], quantity: 1 });
+                result.push({ timestamp: timeData[i], items: map });
+            }
+        }
+        else {
+            // Multi-item mode
+            let itemOffset = 0;
+            for (let s = 0; s < snapshotLengths.length; s++) {
+                const count = snapshotLengths[s];
+                const map = new Map();
+                for (let j = 0; j < count; j++) {
+                    const id = itemIds[itemOffset] ?? 0;
+                    const price = priceData[itemOffset] ?? 0;
+                    const quantity = quantityData[itemOffset] ?? 0;
+                    map.set(id, { price, quantity });
+                    itemOffset++;
                 }
-            });
+                result.push({
+                    timestamp: timeData[s] ?? 0,
+                    items: map
+                });
+            }
         }
         return result;
     }

@@ -5,6 +5,9 @@ export var StreamId;
     StreamId[StreamId["TIME"] = 10] = "TIME";
     StreamId[StreamId["VALUE"] = 20] = "VALUE";
     StreamId[StreamId["META"] = 30] = "META";
+    StreamId[StreamId["ITEM_ID"] = 40] = "ITEM_ID";
+    StreamId[StreamId["QUANTITY"] = 50] = "QUANTITY";
+    StreamId[StreamId["SNAPSHOT_LEN"] = 60] = "SNAPSHOT_LEN";
 })(StreamId || (StreamId = {}));
 export var CodecId;
 (function (CodecId) {
@@ -57,3 +60,4 @@ export var RecoveryAction;
     RecoveryAction["RETRY"] = "RETRY";
     RecoveryAction["IGNORE"] = "IGNORE";
 })(RecoveryAction || (RecoveryAction = {}));
+export const GICS_EOS_MARKER = 0xFF;
