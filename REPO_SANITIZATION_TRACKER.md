@@ -18,7 +18,7 @@
 | Fase | Descripción | Estado | Criterios |
 |:----:|-------------|:------:|-----------|
 | 1 | Freeze State & Branching | ✅ | Branch + Tag creados |
-| 2 | Crear `gics-archive` | ⚪ | Repo inicializado con estructura |
+| 2 | Crear `gics-archive` | ✅ | Repo inicializado con estructura |
 | 3 | Checksums en Archive | ⚪ | SHA256SUMS.txt generado |
 | 4 | Punteros en CORE | ⚪ | ARCHIVE_POINTERS.md + VERSIONING.md |
 | 5 | Podar CORE | ⚪ | Directorios legacy eliminados |
@@ -50,52 +50,35 @@
 
 ---
 
-## 📋 FASE 2: Crear Repo `gics-archive`
+## 📋 FASE 2: Crear Repo `gics-archive` ✅
 
 **Goal**: Inicializar repo hermano con estructura correcta.
 
 ### Checklist
-- [ ] Crear carpeta `../gics-archive/`
-- [ ] `git init`
-- [ ] Crear README.md, INDEX.md, POLICY_NO_TOUCH.md
-- [ ] Crear estructura de directorios:
-  ```
-  versions/v1.1/frozen/
-  versions/v1.1/docs/
-  versions/v1.1/verification/
-  versions/v1.1/manifests/
-  versions/v1.2/canonical/
-  versions/v1.2/distribution/
-  versions/v1.2/deploy/
-  versions/v1.2/docs/
-  versions/v1.2/verification/
-  versions/v1.2/manifests/
-  benchmarks/postfreeze/
-  benchmarks/harnesses/
-  checksums/
-  ```
-- [ ] Copiar contenido del CORE a destinos:
+- [x] Crear carpeta `gics-archive/` (dentro del workspace, excluido via .gitignore)
+- [x] `git init`
+- [x] Crear README.md, INDEX.md, POLICY_NO_TOUCH.md
+- [x] Crear estructura de directorios (13 subdirectorios)
+- [x] Copiar contenido del CORE a destinos
+- [x] Commit inicial: `archive: initial import from de0e65b37671563624ec0336098751c0f1422e73`
 
-| Origen (CORE) | Destino (ARCHIVE) |
-|---------------|-------------------|
-| `gics_frozen/v1_1_0/` | `versions/v1.1/frozen/` |
-| `gics_frozen/v1_2_canonical/` | `versions/v1.2/canonical/` |
-| `gics-v1.2-distribution/` | `versions/v1.2/distribution/` |
-| `deploy/gics-v1.2/` | `versions/v1.2/deploy/` |
-| `bench_postfreeze_artifacts/` | `benchmarks/postfreeze/` |
-| `bench_postfreeze_summary_gen.ts` | `benchmarks/harnesses/` |
-| `bench_postfreeze_verifier.ts` | `benchmarks/harnesses/` |
-| `empirical-compare.mjs` | `benchmarks/harnesses/` |
-
-- [ ] Commit inicial: `archive: initial import from <core commit hash>`
+### Resultados
+| Origen (CORE) | Destino (ARCHIVE) | Estado |
+|---------------|-------------------|--------|
+| `gics_frozen/v1_1_0/` | `versions/v1.1/frozen/` | ✅ |
+| `gics_frozen/v1_2_canonical/` | `versions/v1.2/canonical/` | ✅ |
+| `gics-v1.2-distribution/` | `versions/v1.2/distribution/` | ✅ |
+| `deploy/gics-v1.2/` | `versions/v1.2/deploy/` | ✅ |
+| `bench_postfreeze_artifacts/` | `benchmarks/postfreeze/` | ✅ |
+| `bench_postfreeze_*.ts`, `empirical-compare.mjs` | `benchmarks/harnesses/` | ✅ |
 
 ### Entregables
-- Repo `gics-archive` con estructura completa
-- Contenido copiado sin modificar
+- Archive commit: `92b509f614a0f65751f754a6be8a5d51599cec1e` ✅
+- CORE .gitignore actualizado para excluir `gics-archive/` ✅
 
 ### Criterios de Aceptación
-- `ls ../gics-archive/versions/` muestra v1.1 y v1.2
-- Archivos copiados byte-identical
+- `versions/` contiene v1.1 y v1.2 ✅
+- Archivos copiados byte-identical ✅
 
 ---
 
@@ -334,3 +317,4 @@ Get-ChildItem -Recurse -File | ForEach-Object {
 |-------|--------|------|--------|-------------|
 | 2026-02-07 | Antigravity | - | Inicialización | Creado tracker completo con 9 fases |
 | 2026-02-07 | Antigravity | 1 | ✅ Completada | Rama `repo-sanitize`, tag `archive-snapshot-2026-02-07`, working tree clean |
+| 2026-02-07 | Antigravity | 2 | ✅ Completada | Archive `92b509f` con v1.1, v1.2, benchmarks. Excluido via .gitignore |
