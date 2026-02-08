@@ -18,13 +18,13 @@ export function encodeVarint(values: number[]): Uint8Array {
 
     for (const val of values) {
         // Zigzag encode: map signed to unsigned (negative numbers close to 0)
-        const zigzag = val >= 0 ? val * 2 : (val * -2) - 1;
+        let zigzag = val >= 0 ? val * 2 : (Math.abs(val) * 2) - 1;
 
         // Variable-length encoding
         let n = zigzag;
         while (n >= 0x80) {
-            buffer.push((n & 0x7F) | 0x80);
-            n >>>= 7;
+            buffer.push((n % 128) | 0x80);
+            n = Math.floor(n / 128);
         }
         buffer.push(n);
     }
@@ -41,17 +41,17 @@ export function decodeVarint(data: Uint8Array): number[] {
 
     while (i < data.length) {
         let zigzag = 0;
-        let shift = 0;
+        let p2d = 1; // Power of 2 (for shift replacement)
 
         while (i < data.length) {
             const byte = data[i++];
-            zigzag |= (byte & 0x7F) << shift;
+            zigzag += (byte & 0x7F) * p2d;
             if ((byte & 0x80) === 0) break;
-            shift += 7;
+            p2d *= 128;
         }
 
         // Decode zigzag
-        const val = (zigzag >>> 1) ^ -(zigzag & 1);
+        const val = (zigzag % 2 === 0) ? (zigzag / 2) : -((zigzag + 1) / 2);
         values.push(val);
     }
 
@@ -125,5 +125,5 @@ export function formatSize(bytes: number): string {
     const k = 1024;
     const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
     const i = Math.floor(Math.log(bytes) / Math.log(k));
-    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    return Number.parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }

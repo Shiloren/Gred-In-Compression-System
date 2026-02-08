@@ -3,13 +3,9 @@ import { GICSv2Encoder } from '../src/gics/encode.js';
 import { GICSv2Decoder } from '../src/gics/decode.js';
 import { IntegrityError } from '../src/gics/errors.js';
 import type { Snapshot } from '../src/gics-types.js';
+import { createSnapshot } from './helpers/test-utils.js';
 
 describe('GICS v1.3 Format', () => {
-    const createSnapshot = (timestamp: number, itemId: number, price: number, quantity: number): Snapshot => ({
-        timestamp,
-        items: new Map([[itemId, { price, quantity }]])
-    });
-
     describe('Version Byte', () => {
         it('should encode with version byte 0x03', async () => {
             const encoder = new GICSv2Encoder();

@@ -76,9 +76,9 @@ async function runBench() {
 
     // Assert logic (soft)
     const telB = encB.getTelemetry();
-    const probes = telB.blocks.filter((b: any) => b.stream_id === 20 && (b.flags & 16)).length; // HEALTH_QUAR
+    const probes = telB?.blocks.filter((b: any) => b.stream_id === 20 && (b.flags & 16)).length ?? 0; // HEALTH_QUAR
     // Approx check if we actually probed.
     console.log(`Quarantine Blocks: ${probes}`);
 }
 
-runBench();
+await runBench();

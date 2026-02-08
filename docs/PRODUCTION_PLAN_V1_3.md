@@ -4,7 +4,7 @@
 >
 
 **Operativa / ejecución por agentes:** ver **`docs/AGENT_PROTOCOL_V1_3.md`** (SOP del comando `/v1.3 fase N`, gates de verificación, revisión, commit/push).
-> Estado: **Implementación Completada** (Release Candidate v1.3).
+> Estado: **En Progreso** (Fase 10: SonarQube/Cleanup).
 
 **Operativa / ejecución por agentes:** ver **`docs/AGENT_PROTOCOL_V1_3.md`** (SOP del comando `/v1.3 fase N`, gates de verificación, revisión, commit/push).
 
@@ -199,6 +199,8 @@ await enc.sealToFile();
 | 8 | Adversarial suite | ✅ |  |  | 2026-02-08 | Gates OK: `npm run build` + `npm test` (**166/166 passed**). Added `gics-adversarial.test.ts`. Covers fuzzing, systemic truncation, bit-flipping, zip bomb protection (`LimitExceededError`), and concurrency. Verified with `npm run verify`. |
 
 | 9 | Verificación final (Release Candidate) | ✅ |  |  | 2026-02-08 | Verificación completa: Build, Test (166/166), Bench (50.18x), Verify OK. Ready for release. |
+
+| 10 | SonarQube & Code Cleanup | 🟨 |  |  | 2026-02-08 | Target: 0 lint issues, <5% duplication. |
 
 Leyenda de Estado: ⬜ pendiente / 🟨 en progreso / ✅ completada / ❌ bloqueada
 
@@ -474,6 +476,19 @@ Estado (2026-02-08 17:50):
 - ✅ Implementado `checkDecompressionLimit` en `src/gics/decode.ts` (max 64MB per section).
 - ✅ `StreamSection.deserialize` fixed to handle malicious offsets properly.
 - ✅ Suite completa en `tests/gics-adversarial.test.ts`.
+
+---
+
+### Fase 10 — SonarQube Cleanup & Optimization
+
+Objetivo: Reducir deuda técnica, duplicación y code smells.
+
+Checklist:
+- [ ] Analizar reporte de duplicación (targets: tests files vs src files).
+- [ ] Refactorizar lógica duplicada en tests (helpers comunes).
+- [ ] Eliminar código muerto / legacy no utilizado (revisar `src/gics/v1_2/`).
+- [ ] Resolver 800+ lint issues (si existen).
+- [ ] Mantener 100% test pass rate.
 
 ---
 

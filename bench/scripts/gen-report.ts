@@ -1,6 +1,6 @@
 
-import fs from 'fs';
-import path from 'path';
+import fs from 'node:fs';
+import path from 'node:path';
 
 const resultsDir = path.join(process.cwd(), 'bench/results');
 const reportFile = path.join(process.cwd(), 'bench/report.md');
@@ -28,17 +28,16 @@ function main() {
         return;
     }
 
-    const lines: string[] = [];
-    lines.push('# GICS Benchmark Report');
-    lines.push(`**Run ID**: ${latestFile}`);
-    lines.push(`**Time**: ${data[0].timestamp_utc}`);
-    lines.push(`**Environment**: ${data[0].cpu_model} / ${data[0].os_info}`);
-    lines.push('');
-
-    // Table
-    lines.push('## Results');
-    lines.push('| Dataset | System | Workload | Size (In) | Size (Out) | Ratio | Total (ms) | Setup (ms) | Encode (ms) | RAM (MB) |');
-    lines.push('|---|---|---|---|---|---|---|---|---|---|');
+    const lines: string[] = [
+        '# GICS Benchmark Report',
+        `**Run ID**: ${latestFile}`,
+        `**Time**: ${data[0].timestamp_utc}`,
+        `**Environment**: ${data[0].cpu_model} / ${data[0].os_info}`,
+        '',
+        '## Results',
+        '| Dataset | System | Workload | Size (In) | Size (Out) | Ratio | Total (ms) | Setup (ms) | Encode (ms) | RAM (MB) |',
+        '|---|---|---|---|---|---|---|---|---|---|'
+    ];
 
     for (const r of data) {
         // Skip entries without proper structure
@@ -49,8 +48,8 @@ function main() {
 
         const mb = (r.metrics.output_bytes / 1024 / 1024).toFixed(2);
         const inMb = (r.dataset.size / 1024 / 1024).toFixed(2);
-        const setup = r.metrics.time_setup_ms !== undefined ? r.metrics.time_setup_ms.toFixed(1) : '-';
-        const encode = r.metrics.time_encode_ms !== undefined ? r.metrics.time_encode_ms.toFixed(1) : '-';
+        const setup = r.metrics.time_setup_ms === undefined ? '-' : r.metrics.time_setup_ms.toFixed(1);
+        const encode = r.metrics.time_encode_ms === undefined ? '-' : r.metrics.time_encode_ms.toFixed(1);
 
         lines.push(`| ${r.dataset.name} | **${r.system}** | ${r.workload} | ${inMb} MB | ${mb} MB | **${r.metrics.ratio_x.toFixed(2)}x** | ${r.metrics.time_ms.toFixed(0)} | ${setup} | ${encode} | ${r.metrics.ram_peak_mb.toFixed(1)} |`);
     }

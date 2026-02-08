@@ -13,6 +13,7 @@ import { getOuterCodec } from './outer-codecs.js';
 import { IntegrityChain, calculateCRC32 } from './integrity.js';
 import type { GICSv2DecoderOptions } from './types.js';
 import { SegmentHeader, SegmentFooter, SegmentIndex } from './segment.js';
+import { FieldMath } from './field-math.js';
 import {
     deriveKey,
     verifyAuth,
@@ -57,15 +58,7 @@ export class GICSv2Decoder {
             throw new Error('Data too short');
         }
 
-        let isV2 = true;
-        for (let i = 0; i < GICS_MAGIC_V2.length; i++) {
-            if (this.data[i] !== GICS_MAGIC_V2[i]) {
-                isV2 = false;
-                break;
-            }
-        }
-
-        if (!isV2) {
+        if (!this.verifyMagic()) {
             throw new IntegrityError("GICS Decoder: Legacy v1.1 format not supported.");
         }
 
@@ -73,47 +66,66 @@ export class GICSv2Decoder {
         const version = this.getUint8();
 
         if (version === 0x03) {
-            // v1.3 has 37-byte footer starting with 0xFF.
-            if (this.data[this.data.length - FILE_EOS_SIZE] !== GICS_EOS_MARKER) {
-                throw new IncompleteDataError('GICS v1.3: Missing File EOS marker (0xFF)');
-            }
-
-            // Re-read header with flags
-            this.pos = 5;
-            const flags = this.getUint32();
-            this.isEncrypted = (flags & GICS_FLAGS_V3.ENCRYPTED) !== 0;
-            this.fileHeaderBytes = this.data.subarray(0, GICS_HEADER_SIZE_V3);
-
-            this.pos = GICS_HEADER_SIZE_V3;
-            if (this.isEncrypted) {
-                if (!this.options.password) throw new Error("GICS v1.3: Password required for encrypted file");
-
-                const encMode = this.getUint8();
-                if (encMode !== 1) throw new Error(`GICS v1.3: Unsupported encryption mode ${encMode}`);
-
-                const salt = this.data.slice(this.pos, this.pos + 16); this.pos += 16;
-                const authVerify = this.data.slice(this.pos, this.pos + 32); this.pos += 32;
-                this.getUint8(); // kdfId
-                const iterations = this.getUint32();
-                this.getUint8(); // digestId
-                this.encryptionFileNonce = this.data.slice(this.pos, this.pos + 8); this.pos += 8;
-
-                this.encryptionKey = deriveKey(this.options.password, salt, iterations);
-                if (!verifyAuth(this.encryptionKey, authVerify)) {
-                    throw new IntegrityError("GICS v1.3: Invalid password");
-                }
-            }
-
-            return this.getAllSnapshotsV3();
+            return this.handleV3();
         } else if (version === 0x02) {
-            if (this.data.at(-1) !== 0xFF) {
-                throw new IncompleteDataError('GICS v1.2: Missing EOS marker (0xFF)');
-            }
-            this.pos = 9;
-            return this.getAllSnapshotsV2();
+            return this.handleV2();
         } else {
             throw new IntegrityError(`Unsupported version: ${version}`);
         }
+    }
+
+    private verifyMagic(): boolean {
+        for (let i = 0; i < GICS_MAGIC_V2.length; i++) {
+            if (this.data[i] !== GICS_MAGIC_V2[i]) return false;
+        }
+        return true;
+    }
+
+    private async handleV3(): Promise<Snapshot[]> {
+        // v1.3 has 37-byte footer starting with 0xFF.
+        if (this.data[this.data.length - FILE_EOS_SIZE] !== GICS_EOS_MARKER) {
+            throw new IncompleteDataError('GICS v1.3: Missing File EOS marker (0xFF)');
+        }
+
+        // Re-read header with flags
+        this.pos = 5;
+        const flags = this.getUint32();
+        this.isEncrypted = (flags & GICS_FLAGS_V3.ENCRYPTED) !== 0;
+        this.fileHeaderBytes = this.data.subarray(0, GICS_HEADER_SIZE_V3);
+
+        this.pos = GICS_HEADER_SIZE_V3;
+        if (this.isEncrypted) {
+            await this.setupEncryption();
+        }
+
+        return this.getAllSnapshotsV3();
+    }
+
+    private async setupEncryption() {
+        if (!this.options.password) throw new Error("GICS v1.3: Password required for encrypted file");
+
+        const encMode = this.getUint8();
+        if (encMode !== 1) throw new Error(`GICS v1.3: Unsupported encryption mode ${encMode}`);
+
+        const salt = this.data.slice(this.pos, this.pos + 16); this.pos += 16;
+        const authVerify = this.data.slice(this.pos, this.pos + 32); this.pos += 32;
+        this.getUint8(); // kdfId
+        const iterations = this.getUint32();
+        this.getUint8(); // digestId
+        this.encryptionFileNonce = this.data.slice(this.pos, this.pos + 8); this.pos += 8;
+
+        this.encryptionKey = deriveKey(this.options.password, salt, iterations);
+        if (!verifyAuth(this.encryptionKey, authVerify)) {
+            throw new IntegrityError("GICS v1.3: Invalid password");
+        }
+    }
+
+    private handleV2(): Snapshot[] {
+        if (this.data.at(-1) !== 0xFF) {
+            throw new IncompleteDataError('GICS v1.2: Missing EOS marker (0xFF)');
+        }
+        this.pos = 9;
+        return this.getAllSnapshotsV2();
     }
 
     /**
@@ -224,18 +236,26 @@ export class GICSv2Decoder {
         const integrity = new IntegrityChain();
 
         while (this.pos < dataEnd) {
-            try {
-                const { snapshots: segmentSnaps, nextPos } = await this.decodeSegment(false, undefined, integrity);
-                snapshots.push(...segmentSnaps);
-                this.pos = nextPos;
-            } catch (err) {
-                if (err instanceof IntegrityError) throw err;
-                if (err instanceof LimitExceededError) throw err;
-                throw new IntegrityError(err instanceof Error ? err.message : "Segment decoding failed");
-            }
+            snapshots.push(...await this.decodeNextSegment(integrity));
         }
 
-        // Verify File EOS
+        this.verifyFileEOS(integrity);
+        return snapshots;
+    }
+
+    private async decodeNextSegment(integrity: IntegrityChain): Promise<Snapshot[]> {
+        try {
+            const { snapshots: segmentSnaps, nextPos } = await this.decodeSegment(false, undefined, integrity);
+            this.pos = nextPos;
+            return segmentSnaps;
+        } catch (err) {
+            if (err instanceof IntegrityError || err instanceof LimitExceededError) throw err;
+            throw new IntegrityError(err instanceof Error ? err.message : "Segment decoding failed");
+        }
+    }
+
+    private verifyFileEOS(integrity: IntegrityChain) {
+        const dataEnd = this.data.length - FILE_EOS_SIZE;
         const eosBytes = this.data.subarray(dataEnd, this.data.length);
         if (eosBytes[0] !== GICS_EOS_MARKER) throw new IncompleteDataError("Missing File EOS");
         const fileRootHash = eosBytes.slice(1, 33);
@@ -244,8 +264,6 @@ export class GICSv2Decoder {
                 throw new IntegrityError("File-level integrity chain mismatch");
             }
         }
-
-        return snapshots;
     }
 
     private async decodeSegment(skipIfMissing: boolean, itemId?: number, chain?: IntegrityChain): Promise<{ snapshots: Snapshot[], nextPos: number, index: SegmentIndex }> {
@@ -506,49 +524,21 @@ export class GICSv2Decoder {
     }
 
     private decodeTimeStream(deltas: number[], shouldCommit: boolean, context: ContextV0): number[] {
-        const timestamps: number[] = [];
-        let prev = context.lastTimestamp ?? 0;
-        let prevDelta = context.lastTimestampDelta ?? 0;
-
-        for (const deltaOfDelta of deltas) {
-            const currentDelta = prevDelta + deltaOfDelta;
-            const current = prev + currentDelta;
-            timestamps.push(current);
-            prev = current;
-            prevDelta = currentDelta;
-        }
-
+        const result = FieldMath.decodeTimeStream(deltas, context.lastTimestamp ?? 0, context.lastTimestampDelta ?? 0);
         if (shouldCommit) {
-            context.lastTimestamp = prev;
-            context.lastTimestampDelta = prevDelta;
+            context.lastTimestamp = result.nextTimestamp;
+            context.lastTimestampDelta = result.nextTimestampDelta;
         }
-        return timestamps;
+        return result.timestamps;
     }
 
     private decodeValueStream(deltas: number[], shouldCommit: boolean, context: ContextV0, isDOD: boolean = false): number[] {
-        const values: number[] = [];
-        let prev = context.lastValue ?? 0;
-        let prevDelta = context.lastValueDelta ?? 0;
-
-        for (const rawChange of deltas) {
-            let change = rawChange;
-            if (isDOD) {
-                const currentDelta = prevDelta + change;
-                change = currentDelta;
-                prevDelta = currentDelta;
-            } else {
-                prevDelta = change;
-            }
-            const current = prev + change;
-            values.push(current);
-            prev = current;
-        }
-
+        const result = FieldMath.decodeValueStream(deltas, context.lastValue ?? 0, context.lastValueDelta ?? 0, isDOD);
         if (shouldCommit) {
-            context.lastValue = prev;
-            context.lastValueDelta = prevDelta;
+            context.lastValue = result.nextValue;
+            context.lastValueDelta = result.nextValueDelta;
         }
-        return values;
+        return result.values;
     }
 
     private getUint8(): number {

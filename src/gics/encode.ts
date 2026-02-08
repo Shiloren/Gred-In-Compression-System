@@ -17,6 +17,7 @@ import { SegmentBuilder, Segment, SegmentHeader, SegmentFooter, SegmentIndex, Bl
 import { FileAccess } from './file-access.js';
 import type { FileHandle } from 'node:fs/promises';
 import { BlockStats } from './telemetry-types.js';
+import { FieldMath } from './field-math.js';
 import {
     deriveKey,
     generateAuthVerify,
@@ -472,9 +473,12 @@ export class GICSv2Encoder {
 
         // Final state commit for persistent fields (TIME/VALUE)
         if (streamId === StreamId.TIME) {
-            this.computeTimeDeltas(ctx, chunk, true);
+            const result = FieldMath.computeTimeDeltas(chunk, ctx.lastTimestamp ?? 0, ctx.lastTimestampDelta ?? 0);
+            ctx.lastTimestamp = result.nextTimestamp;
+            ctx.lastTimestampDelta = result.nextTimestampDelta;
         } else if (streamId === StreamId.VALUE) {
-            this.computeValueDeltas(ctx, chunk, true);
+            const result = FieldMath.computeValueDeltas(chunk, ctx.lastValue ?? 0);
+            ctx.lastValue = result.nextValue;
         }
 
         const chmResult = chm.update(route.decision, metrics, rawInBytes, finalEncoded.length, 0, currentBlockIndex, finalCodec);
@@ -580,42 +584,20 @@ export class GICSv2Encoder {
     }
 
     private computeTimeDeltas(ctx: ContextV0, timestamps: number[], commitState: boolean): number[] {
-        const deltas: number[] = [];
-        let prev = ctx.lastTimestamp ?? 0;
-        let prevDelta = ctx.lastTimestampDelta ?? 0;
-
-        for (const current of timestamps) {
-            const currentDelta = current - prev;
-            const deltaOfDelta = currentDelta - prevDelta;
-            deltas.push(deltaOfDelta);
-            prev = current;
-            prevDelta = currentDelta;
-        }
-
+        const result = FieldMath.computeTimeDeltas(timestamps, ctx.lastTimestamp ?? 0, ctx.lastTimestampDelta ?? 0);
         if (commitState) {
-            ctx.lastTimestamp = prev;
-            ctx.lastTimestampDelta = prevDelta;
+            ctx.lastTimestamp = result.nextTimestamp;
+            ctx.lastTimestampDelta = result.nextTimestampDelta;
         }
-        return deltas;
+        return result.deltas;
     }
 
     private computeValueDeltas(ctx: ContextV0, values: number[], commitState: boolean): number[] {
-        const deltas: number[] = [];
-        let prev = ctx.lastValue ?? 0;
-        let prevDelta = ctx.lastValueDelta ?? 0;
-
-        for (const current of values) {
-            const diff = current - prev;
-            deltas.push(diff);
-            prevDelta = diff;
-            prev = current;
-        }
-
+        const result = FieldMath.computeValueDeltas(values, ctx.lastValue ?? 0);
         if (commitState) {
-            ctx.lastValue = prev;
-            ctx.lastValueDelta = prevDelta;
+            ctx.lastValue = result.nextValue;
         }
-        return deltas.map(Math.round);
+        return result.deltas;
     }
 
     private selectBestCodec(streamId: StreamId, inputData: number[], metrics: BlockMetrics, stateSnapshot: ContextSnapshot): { candidateEncoded: Uint8Array, candidateCodec: InnerCodecId } {
@@ -626,20 +608,26 @@ export class GICSv2Encoder {
         const candidates: { id: InnerCodecId, encode: () => Uint8Array }[] = [];
 
         if (streamId === StreamId.TIME) {
-            candidates.push({ id: InnerCodecId.DOD_VARINT, encode: () => encodeVarint(inputData) });
-            candidates.push({ id: InnerCodecId.RLE_DOD, encode: () => Codecs.encodeRLE(inputData) });
-            candidates.push({ id: InnerCodecId.BITPACK_DELTA, encode: () => Codecs.encodeBitPack(inputData) });
+            candidates.push(
+                { id: InnerCodecId.DOD_VARINT, encode: () => encodeVarint(inputData) },
+                { id: InnerCodecId.RLE_DOD, encode: () => Codecs.encodeRLE(inputData) },
+                { id: InnerCodecId.BITPACK_DELTA, encode: () => Codecs.encodeBitPack(inputData) }
+            );
         } else if (streamId === StreamId.VALUE) {
-            candidates.push({ id: InnerCodecId.VARINT_DELTA, encode: () => encodeVarint(inputData) });
-            candidates.push({ id: InnerCodecId.BITPACK_DELTA, encode: () => Codecs.encodeBitPack(inputData) });
-            candidates.push({ id: InnerCodecId.RLE_ZIGZAG, encode: () => Codecs.encodeRLE(inputData) });
+            candidates.push(
+                { id: InnerCodecId.VARINT_DELTA, encode: () => encodeVarint(inputData) },
+                { id: InnerCodecId.BITPACK_DELTA, encode: () => Codecs.encodeBitPack(inputData) },
+                { id: InnerCodecId.RLE_ZIGZAG, encode: () => Codecs.encodeRLE(inputData) }
+            );
             if (ctx.id && metrics.unique_ratio < 0.6) {
                 candidates.push({ id: InnerCodecId.DICT_VARINT, encode: () => Codecs.encodeDict(inputData, ctx) });
             }
             if (metrics.dod_zero_ratio > 0.4 || metrics.mean_abs_delta > 10) {
                 const dod = this.prepareDODStream(streamId, inputData, stateSnapshot);
-                candidates.push({ id: InnerCodecId.DOD_VARINT, encode: () => encodeVarint(dod) });
-                candidates.push({ id: InnerCodecId.RLE_DOD, encode: () => Codecs.encodeRLE(dod) });
+                candidates.push(
+                    { id: InnerCodecId.DOD_VARINT, encode: () => encodeVarint(dod) },
+                    { id: InnerCodecId.RLE_DOD, encode: () => Codecs.encodeRLE(dod) }
+                );
             }
         }
 

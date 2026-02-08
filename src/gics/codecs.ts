@@ -13,7 +13,8 @@ export class Codecs {
         if (values.length === 0) return new Uint8Array(0);
 
         // 1. ZigZag encode to handle negative values and make them positive.
-        const unsigned = values.map(v => (v >= 0 ? v * 2 : (v * -2) - 1));
+        // Use Math.abs and multiplication to avoid 32-bit truncation
+        const unsigned = values.map(v => (v >= 0 ? v * 2 : (Math.abs(v) * 2) - 1));
 
         // Find max
         let max = 0;
@@ -21,13 +22,14 @@ export class Codecs {
             if (u > max) max = u;
         }
 
-        // Determine bit width
+        // Determine bit width (support up to 53 bits for JS safe integers)
         let bits = 0;
-        while ((1 << bits) <= max && bits < 32) {
+        let tempMax = max;
+        while (tempMax > 0) {
+            tempMax = Math.floor(tempMax / 2);
             bits++;
         }
         if (max === 0) bits = 1;
-        if (bits === 0) bits = 1;
 
         const dataBytes = Math.ceil((unsigned.length * bits) / 8);
         const result = new Uint8Array(1 + dataBytes);
@@ -36,12 +38,13 @@ export class Codecs {
         let bitPos = 0;
         for (const val of unsigned) {
             for (let b = 0; b < bits; b++) {
-                const bit = (val >> b) & 1;
+                // val / 2^b instead of val >> b to support > 32 bits
+                const bit = Math.floor(val / Math.pow(2, b)) % 2;
                 if (bit) {
                     const totalBit = bitPos + b;
-                    const byteIdx = 1 + (totalBit >> 3);
-                    const bitIdx = totalBit & 7;
-                    result[byteIdx] |= (1 << bitIdx);
+                    const byteIdx = 1 + Math.floor(totalBit / 8);
+                    const bitIdx = totalBit % 8;
+                    result[byteIdx] |= (1 << bitIdx); // bitIdx is 0-7, so bitwise is safe
                 }
             }
             bitPos += bits;
@@ -60,19 +63,21 @@ export class Codecs {
             let val = 0;
             for (let b = 0; b < bits; b++) {
                 const totalBit = bitPos + b;
-                const byteIdx = 1 + (totalBit >> 3);
-                const bitIdx = totalBit & 7;
+                const byteIdx = 1 + Math.floor(totalBit / 8);
+                const bitIdx = totalBit % 8;
                 if (byteIdx < data.length) {
                     const bit = (data[byteIdx] >> bitIdx) & 1;
                     if (bit) {
-                        val |= (1 << b);
+                        // val + 2^b instead of val |= (1 << b) to support > 32 bits
+                        val += Math.pow(2, b);
                     }
                 }
             }
             bitPos += bits;
 
-            // Undo ZigZag
-            const decoded = (val >>> 1) ^ -(val & 1);
+            // Undo ZigZag (avoiding bitwise if possible, but zigzag is usually small)
+            // For large values, ZigZag is: val = (u % 2 === 0) ? u/2 : -(u+1)/2
+            const decoded = (val % 2 === 0) ? (val / 2) : -((val + 1) / 2);
             result.push(decoded);
         }
 
