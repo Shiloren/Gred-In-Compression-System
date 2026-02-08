@@ -8,7 +8,7 @@ import {
 import { ContextV0 } from './context.js';
 import { Codecs } from './codecs.js';
 import { IncompleteDataError, IntegrityError, LimitExceededError } from './errors.js';
-import { StreamSection } from './stream-section.js';
+import { StreamSection, BlockManifestEntry } from './stream-section.js';
 import { getOuterCodec } from './outer-codecs.js';
 import { IntegrityChain, calculateCRC32 } from './integrity.js';
 import type { GICSv2DecoderOptions } from './types.js';
@@ -365,41 +365,51 @@ export class GICSv2Decoder {
 
     private async processSection(section: StreamSection, res: DecompressionResult, context: ContextV0, chain?: IntegrityChain) {
         if (chain) {
-            const blockCountBytes = new Uint8Array(2);
-            new DataView(blockCountBytes.buffer).setUint16(0, section.blockCount, true);
-            const manifestBytes = StreamSection.serializeManifest(section.manifest);
-            const dataToHash = this.concatArrays([new Uint8Array([section.streamId]), blockCountBytes, manifestBytes, section.payload]);
-            const calculatedHash = chain.update(dataToHash);
-            if (!this.compareHashes(calculatedHash, section.sectionHash)) {
-                if (this.options.integrityMode === 'strict') throw new IntegrityError(`Hash mismatch for stream ${section.streamId}`);
-            }
+            this.verifySectionHash(section, chain);
         }
 
-        // Decompression Bomb Protection
         this.checkDecompressionLimit(section.uncompressedLen);
-
-        const outerCodec = getOuterCodec(section.outerCodecId);
 
         let payload = section.payload;
         if (this.isEncrypted) {
-            if (!this.encryptionKey || !this.encryptionFileNonce) throw new Error("Encryption key or nonce missing");
-            payload = decryptSection(
-                section.payload,
-                section.authTag!,
-                this.encryptionKey,
-                this.encryptionFileNonce,
-                section.streamId,
-                this.fileHeaderBytes!
-            );
+            payload = this.decryptSectionPayload(section);
         }
 
-        const decompressed = await outerCodec.decompress(payload);
+        const decompressed = await getOuterCodec(section.outerCodecId).decompress(payload);
+        this.decodeAndDistributeSection(section.streamId, section.manifest, decompressed, context, res);
+    }
+
+    private verifySectionHash(section: StreamSection, chain: IntegrityChain) {
+        const blockCountBytes = new Uint8Array(2);
+        new DataView(blockCountBytes.buffer).setUint16(0, section.blockCount, true);
+        const manifestBytes = StreamSection.serializeManifest(section.manifest);
+        const dataToHash = this.concatArrays([new Uint8Array([section.streamId]), blockCountBytes, manifestBytes, section.payload]);
+        const calculatedHash = chain.update(dataToHash);
+
+        if (!this.compareHashes(calculatedHash, section.sectionHash)) {
+            if (this.options.integrityMode === 'strict') throw new IntegrityError(`Hash mismatch for stream ${section.streamId}`);
+        }
+    }
+
+    private decryptSectionPayload(section: StreamSection): Uint8Array {
+        if (!this.encryptionKey || !this.encryptionFileNonce) throw new Error("Encryption key or nonce missing");
+        return decryptSection(
+            section.payload,
+            section.authTag!,
+            this.encryptionKey,
+            this.encryptionFileNonce,
+            section.streamId,
+            this.fileHeaderBytes!
+        );
+    }
+
+    private decodeAndDistributeSection(streamId: StreamId, manifest: BlockManifestEntry[], decompressed: Uint8Array, context: ContextV0, res: DecompressionResult) {
         let offset = 0;
-        for (const entry of section.manifest) {
+        for (const entry of manifest) {
             const blockPayload = decompressed.subarray(offset, offset + entry.payloadLen);
             offset += entry.payloadLen;
-            const values = this.decodeBlock(section.streamId, entry.innerCodecId, entry.nItems, blockPayload, entry.flags, context);
-            this.distributeValues(section.streamId, values, res);
+            const values = this.decodeBlock(streamId, entry.innerCodecId, entry.nItems, blockPayload, entry.flags, context);
+            this.distributeValues(streamId, values, res);
         }
     }
 
@@ -456,19 +466,8 @@ export class GICSv2Decoder {
     }
 
     private decodeBlock(streamId: StreamId, codecId: InnerCodecId, nItems: number, payload: Uint8Array, blockFlags: number, context: ContextV0): number[] {
-        let values: number[] = [];
-
-        if (codecId === InnerCodecId.VARINT_DELTA || codecId === InnerCodecId.DOD_VARINT) {
-            values = decodeVarint(payload);
-        } else if (codecId === InnerCodecId.BITPACK_DELTA) {
-            values = Codecs.decodeBitPack(payload, nItems);
-        } else if (codecId === InnerCodecId.RLE_ZIGZAG || codecId === InnerCodecId.RLE_DOD) {
-            values = Codecs.decodeRLE(payload);
-        } else if (codecId === InnerCodecId.DICT_VARINT) {
-            values = Codecs.decodeDict(payload, context);
-        } else {
-            return [];
-        }
+        const values = this.dispatchCodec(codecId, payload, nItems, context);
+        if (values.length === 0) return [];
 
         const commitable = (blockFlags & 0x10) === 0;
 
@@ -482,15 +481,48 @@ export class GICSv2Decoder {
         }
     }
 
-    private reconstructSnapshots(timeData: number[], snapshotLengths: number[], itemIds: number[], priceData: number[], quantityData: number[]): Snapshot[] {
-        const result: Snapshot[] = [];
+    private dispatchCodec(codecId: InnerCodecId, payload: Uint8Array, nItems: number, context: ContextV0): number[] {
+        switch (codecId) {
+            case InnerCodecId.VARINT_DELTA:
+            case InnerCodecId.DOD_VARINT:
+                return decodeVarint(payload);
+            case InnerCodecId.BITPACK_DELTA:
+                return Codecs.decodeBitPack(payload, nItems);
+            case InnerCodecId.RLE_ZIGZAG:
+            case InnerCodecId.RLE_DOD:
+                return Codecs.decodeRLE(payload);
+            case InnerCodecId.DICT_VARINT:
+                return Codecs.decodeDict(payload, context);
+            default:
+                return [];
+        }
+    }
 
-        // Phase 3: No legacy single-item fallback. SNAPSHOT_LEN stream is mandatory in v1.3.
+    private reconstructSnapshots(timeData: number[], snapshotLengths: number[], itemIds: number[], priceData: number[], quantityData: number[]): Snapshot[] {
+        this.validateCrossStreams(timeData, snapshotLengths, itemIds, priceData, quantityData);
+
+        const result: Snapshot[] = [];
+        let itemOffset = 0;
+        for (let s = 0; s < snapshotLengths.length; s++) {
+            const count = snapshotLengths[s];
+            const map = new Map<number, { price: number; quantity: number }>();
+            for (let j = 0; j < count; j++) {
+                const id = itemIds[itemOffset] ?? 0;
+                const price = priceData[itemOffset] ?? 0;
+                const quantity = quantityData[itemOffset] ?? 0;
+                map.set(id, { price, quantity });
+                itemOffset++;
+            }
+            result.push({ timestamp: timeData[s] ?? 0, items: map });
+        }
+        return result;
+    }
+
+    private validateCrossStreams(timeData: number[], snapshotLengths: number[], itemIds: number[], priceData: number[], quantityData: number[]) {
         if (snapshotLengths.length === 0) {
             throw new IntegrityError('GICS v1.3: SNAPSHOT_LEN stream is mandatory');
         }
 
-        // Phase 6: Cross-stream validation
         if (timeData.length !== snapshotLengths.length) {
             throw new IntegrityError(`Cross-stream mismatch: TIME length (${timeData.length}) != SNAPSHOT_LEN length (${snapshotLengths.length})`);
         }
@@ -507,21 +539,6 @@ export class GICSv2Decoder {
         if (itemIds.length !== quantityData.length) {
             throw new IntegrityError(`Cross-stream mismatch: ITEM_ID length (${itemIds.length}) != QUANTITY length (${quantityData.length})`);
         }
-
-        let itemOffset = 0;
-        for (let s = 0; s < snapshotLengths.length; s++) {
-            const count = snapshotLengths[s];
-            const map = new Map<number, { price: number; quantity: number }>();
-            for (let j = 0; j < count; j++) {
-                const id = itemIds[itemOffset] ?? 0;
-                const price = priceData[itemOffset] ?? 0;
-                const quantity = quantityData[itemOffset] ?? 0;
-                map.set(id, { price, quantity });
-                itemOffset++;
-            }
-            result.push({ timestamp: timeData[s] ?? 0, items: map });
-        }
-        return result;
     }
 
     private decodeTimeStream(deltas: number[], shouldCommit: boolean, context: ContextV0): number[] {

@@ -264,43 +264,57 @@ export class GICSv2Encoder {
             const data = streamBlocks.get(streamId);
             if (!data) continue;
 
-            const concatenated = this.concatArrays(data.payloads);
-            const compressed = await outerCodec.compress(concatenated);
-            const manifestBytes = StreamSection.serializeManifest(data.manifest);
-
-            let finalPayload = compressed;
-            let authTag: Uint8Array | null = null;
-            if (this.encryptionKey) {
-                const aad = this.emitFileHeader().subarray(0, GICS_HEADER_SIZE_V3);
-                const encrypted = encryptSection(compressed, this.encryptionKey, this.encryptionFileNonce!, streamId, aad);
-                finalPayload = encrypted.ciphertext;
-                authTag = encrypted.tag;
-            }
-
-            const blockCountBytes = new Uint8Array(2);
-            new DataView(blockCountBytes.buffer).setUint16(0, data.manifest.length, true);
-
-            const dataToHash = this.concatArrays([
-                new Uint8Array([streamId]),
-                blockCountBytes,
-                manifestBytes,
-                finalPayload
-            ]);
-            const sectionHash = this.integrity.update(dataToHash);
-
-            sections.push(new StreamSection(
-                streamId,
-                OuterCodecId.ZSTD,
-                data.manifest.length,
-                concatenated.length,
-                finalPayload.length,
-                sectionHash,
-                data.manifest,
-                finalPayload,
-                authTag
-            ));
+            const section = await this.wrapSingleSection(streamId, data, outerCodec);
+            sections.push(section);
         }
         return sections;
+    }
+
+    private async wrapSingleSection(
+        streamId: StreamId,
+        data: { manifest: BlockManifestEntry[], payloads: Uint8Array[] },
+        outerCodec: any
+    ): Promise<StreamSection> {
+        const concatenated = this.concatArrays(data.payloads);
+        const compressed = await outerCodec.compress(concatenated);
+        const manifestBytes = StreamSection.serializeManifest(data.manifest);
+
+        const { finalPayload, authTag } = this.encryptPayloadIfNeeded(streamId, compressed);
+        const sectionHash = this.calculateSectionHash(streamId, data.manifest.length, manifestBytes, finalPayload);
+
+        return new StreamSection(
+            streamId,
+            OuterCodecId.ZSTD,
+            data.manifest.length,
+            concatenated.length,
+            finalPayload.length,
+            sectionHash,
+            data.manifest,
+            finalPayload,
+            authTag
+        );
+    }
+
+    private encryptPayloadIfNeeded(streamId: StreamId, compressed: Uint8Array): { finalPayload: Uint8Array, authTag: Uint8Array | null } {
+        if (!this.encryptionKey) {
+            return { finalPayload: compressed, authTag: null };
+        }
+        const aad = this.emitFileHeader().subarray(0, GICS_HEADER_SIZE_V3);
+        const encrypted = encryptSection(compressed, this.encryptionKey, this.encryptionFileNonce!, streamId, aad);
+        return { finalPayload: encrypted.ciphertext, authTag: encrypted.tag };
+    }
+
+    private calculateSectionHash(streamId: StreamId, blockCount: number, manifestBytes: Uint8Array, finalPayload: Uint8Array): Uint8Array {
+        const blockCountBytes = new Uint8Array(2);
+        new DataView(blockCountBytes.buffer).setUint16(0, blockCount, true);
+
+        const dataToHash = this.concatArrays([
+            new Uint8Array([streamId]),
+            blockCountBytes,
+            manifestBytes,
+            finalPayload
+        ]);
+        return this.integrity.update(dataToHash);
     }
 
     private createSegmentIndex(itemIds: number[]): SegmentIndex {

@@ -66,7 +66,6 @@ export class HealthMonitor {
 
     // State Tracking
     private totalBlocks = 0;
-    private quarantineStartBlock = -1;
     private recoveryCounter = 0;
 
     // Split-5 Stats
@@ -99,57 +98,52 @@ export class HealthMonitor {
         this.logger = logger;
     }
 
-    /**
-     * DECIDE ROUTE (Router-First)
-     * Determines whether the block belongs in CORE or QUARANTINE.
-     * Does NOT update state (stateless check).
-     * @param probeRatio - Ratio from a dry-run encode (Normal Attempt). Required if in Normal or Probing.
-     */
     decideRoute(metrics: BlockMetrics, probeRatio: number, blockIndex: number): { decision: RoutingDecision, reason: string | null } {
-
-
-        // 0. ENTROPY GATE (Hard Guard)
-        // Prevent high-entropy noise from ever entering CORE, regardless of ratio.
-        if (metrics.unique_ratio > 0.85 && metrics.unique_delta_ratio > 0.85) {
+        if (this.checkEntropyGate(metrics)) {
             return { decision: RoutingDecision.QUARANTINE, reason: 'ENTROPY_GATE' };
         }
 
-        // 1. If currently NORMAL, check for Anomaly (Entry Condition)
         if (this.state === CHMState.NORMAL) {
-            const detection = this.detectAnomaly(probeRatio, metrics.unique_ratio);
-            if (detection.isAnomaly) {
-                this.logger?.info?.(`[CHM] ANOMALY DETECTED! Ratio=${probeRatio.toFixed(2)} < Threshold. Base=${this.baselineRatio.toFixed(2)} Reason=${detection.reason}`);
-                return { decision: RoutingDecision.QUARANTINE, reason: detection.reason };
-            }
-            return { decision: RoutingDecision.CORE, reason: null };
+            return this.decideNormalRoute(probeRatio, metrics.unique_ratio);
         }
 
-        // 2. If currently QUARANTINE (Active), check for Recovery (Exit Condition)
         if (this.state === CHMState.QUARANTINE_ACTIVE) {
-            // Recovery is evaluated only on probe blocks to avoid short-circuit recovery.
-            // (See PROBE_INTERVAL + M_RECOVERY_BLOCKS contract.)
-            const shouldProbe = (blockIndex % this.PROBE_INTERVAL) === 0;
-            if (!shouldProbe) {
-                return { decision: RoutingDecision.QUARANTINE, reason: 'QUARANTINE_ACTIVE' };
-            }
-
-            const isGood = this.checkRecoveryCriteria(probeRatio);
-            if (isGood) {
-                if (this.recoveryCounter + 1 >= this.M_RECOVERY_BLOCKS) {
-                    return { decision: RoutingDecision.CORE, reason: 'RECOVERY_MATCH' };
-                }
-                return { decision: RoutingDecision.QUARANTINE, reason: 'RECOVERY_PENDING' };
-            }
-
-            return { decision: RoutingDecision.QUARANTINE, reason: 'RECOVERY_PROBE_FAIL' };
+            return this.decideQuarantineRoute(probeRatio, blockIndex);
         }
 
         return { decision: RoutingDecision.CORE, reason: null };
     }
 
-    /**
-     * Updates the CHM state based on the Routing Decision executed by the Encoder.
-     */
+    private checkEntropyGate(metrics: BlockMetrics): boolean {
+        return metrics.unique_ratio > 0.85 && metrics.unique_delta_ratio > 0.85;
+    }
+
+    private decideNormalRoute(probeRatio: number, uniqueRatio: number): { decision: RoutingDecision, reason: string | null } {
+        const detection = this.detectAnomaly(probeRatio, uniqueRatio);
+        if (detection.isAnomaly) {
+            this.logger?.info?.(`[CHM] ANOMALY DETECTED! Ratio=${probeRatio.toFixed(2)} < Threshold. Base=${this.baselineRatio.toFixed(2)} Reason=${detection.reason}`);
+            return { decision: RoutingDecision.QUARANTINE, reason: detection.reason };
+        }
+        return { decision: RoutingDecision.CORE, reason: null };
+    }
+
+    private decideQuarantineRoute(probeRatio: number, blockIndex: number): { decision: RoutingDecision, reason: string | null } {
+        const shouldProbe = (blockIndex % this.PROBE_INTERVAL) === 0;
+        if (!shouldProbe) {
+            return { decision: RoutingDecision.QUARANTINE, reason: 'QUARANTINE_ACTIVE' };
+        }
+
+        const isGood = this.checkRecoveryCriteria(probeRatio);
+        if (isGood && this.recoveryCounter + 1 >= this.M_RECOVERY_BLOCKS) {
+            return { decision: RoutingDecision.CORE, reason: 'RECOVERY_MATCH' };
+        }
+
+        return {
+            decision: RoutingDecision.QUARANTINE,
+            reason: isGood ? 'RECOVERY_PENDING' : 'RECOVERY_PROBE_FAIL'
+        };
+    }
+
     update(
         decision: RoutingDecision,
         metrics: BlockMetrics,
@@ -164,25 +158,10 @@ export class HealthMonitor {
 
         this.updateStats(decision, payloadIn, payloadOut, headerBytes);
 
-        // 1. Compute Ratio (for logging/worst block)
-        const safeOut = payloadOut > 0 ? payloadOut : 1;
-        const currentRatio = payloadIn / safeOut;
-
-        // 2. State Logic - Transition based on DECISION
+        const currentRatio = payloadIn / (payloadOut > 0 ? payloadOut : 1);
         const logicResult = this.updateStateLogic(decision, metrics, currentRatio, blockIndex);
 
-        // 3. Train Baseline (Hard Guard)
-        // Train ONLY if CORE decision (which implies Normal state or Recovery point)
-        // AND not high entropy (prevent adaptation to noise)
-        const effectiveTrain = (decision === RoutingDecision.CORE)
-            && ((logicResult.flags & BLOCK_FLAGS.ANOMALY_END) === 0)
-            && (metrics.unique_ratio <= 0.8);
-
-        if (effectiveTrain) {
-            this.trainBaseline(currentRatio, metrics.unique_ratio);
-        }
-
-        // 4. Update Worst Blocks
+        this.trainBaselineIfNeeded(decision, logicResult.flags, currentRatio, metrics.unique_ratio);
         this.updateWorstBlocks(blockIndex, currentRatio, metrics.unique_ratio, codecId);
 
         return {
@@ -192,6 +171,16 @@ export class HealthMonitor {
             inQuarantine: this.state === CHMState.QUARANTINE_ACTIVE,
             reasonCode: logicResult.reasonCode
         };
+    }
+
+    private trainBaselineIfNeeded(decision: RoutingDecision, flags: number, ratio: number, uniqueRatio: number) {
+        const canTrain = (decision === RoutingDecision.CORE)
+            && ((flags & BLOCK_FLAGS.ANOMALY_END) === 0)
+            && (uniqueRatio <= 0.8);
+
+        if (canTrain) {
+            this.trainBaseline(ratio, uniqueRatio);
+        }
     }
 
     private updateStats(decision: RoutingDecision, payloadIn: number, payloadOut: number, headerBytes: number) {
@@ -224,7 +213,6 @@ export class HealthMonitor {
             this.state = CHMState.QUARANTINE_ACTIVE;
             this.frozenBaselineRatio = this.baselineRatio;
             this.recoveryCounter = 0;
-            this.quarantineStartBlock = blockIndex;
 
             flags |= BLOCK_FLAGS.ANOMALY_START;
             flags |= BLOCK_FLAGS.HEALTH_QUAR;
