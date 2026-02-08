@@ -43,7 +43,7 @@ export const KDF_CONFIG = {
 export const SALT_LEN = 16;            // 128-bit salt
 export const IV_LEN = 12;              // GCM standard IV length
 export const AUTH_TAG_LEN = 16;        // GCM standard tag length
-export const FILE_NONCE_LEN = 8;       // Phase 2: For deterministic IV
+export const FILE_NONCE_LEN = 12;       // Phase 2: For deterministic IV
 export const AUTH_VERIFY_LEN = 32;     // HMAC-SHA256 output
 
 // Legacy exports for backward compatibility
@@ -107,7 +107,6 @@ class KeyService {
             );
             this.isLocked = false;
         } catch (error) {
-            console.error('[KeyService] Unlock failed:', error);
             this.lock();
             throw error;
         }
@@ -118,7 +117,18 @@ class KeyService {
      */
     lock(): void {
         if (this.masterKey) {
+            // Robust wipe based on DoD 5220.22-M
+            const len = this.masterKey.length;
+
+            // Pass 1: Random
+            randomBytes(len).copy(this.masterKey);
+            // Pass 2: Zeros
             this.masterKey.fill(0);
+            // Pass 3: Random
+            randomBytes(len).copy(this.masterKey);
+            // Final: Zeros
+            this.masterKey.fill(0);
+
             this.masterKey = null;
         }
         this.isLocked = true;

@@ -1,7 +1,6 @@
 import assert from 'node:assert';
 import { GICSv2Encoder } from '../src/gics/encode.js';
-import { StreamSection } from '../src/gics/stream-section.js';
-import { SegmentHeader } from '../src/gics/segment.js';
+import { getBlocksWithFlags, BlockFlagInfo } from './helpers/test-utils.js';
 
 // Mocks
 // We need to subclass or mock GICSv2Encoder to force behavior?
@@ -130,39 +129,11 @@ describe('GICS v1.2 CHM Recovery Probe', () => {
         // We expect to see ANOMALY_END eventually.
         // Parse blocks.
 
-        let blockIndicesWithEnd: number[] = [];
-        let valueBlockCount = 0;
+        const blocksWithFlags = getBlocksWithFlags(finalData, 20); // Value Stream
+        const blockIndicesWithEnd = blocksWithFlags
+            .filter((b: BlockFlagInfo) => (b.flags & 4) !== 0) // ANOMALY_END
+            .map((b: BlockFlagInfo) => b.index);
 
-        let pos = 14; // GICS_HEADER_SIZE_V3
-        const dataEnd = finalData.length - 37; // FILE_EOS_SIZE
-
-        while (pos < dataEnd) {
-            if (finalData[pos] === 0x53 && finalData[pos + 1] === 0x47) { // SEGMENT_MAGIC "SG"
-                const segmentStart = pos;
-                const header = SegmentHeader.deserialize(finalData.subarray(pos, pos + 14));
-                pos += 14;
-
-                const sectionsEnd = segmentStart + header.indexOffset;
-                while (pos < sectionsEnd) {
-                    const section = StreamSection.deserialize(finalData, pos);
-                    if (section.streamId === 20) { // Value Stream
-                        for (const entry of section.manifest) {
-                            valueBlockCount++;
-                            if ((entry.flags & 4) !== 0) { // ANOMALY_END
-                                blockIndicesWithEnd.push(valueBlockCount);
-                            }
-                        }
-                    }
-                    pos += section.totalSize;
-                }
-                pos = sectionsEnd;
-                while (pos < dataEnd && !(finalData[pos] === 0x53 && finalData[pos + 1] === 0x47)) {
-                    pos++;
-                }
-            } else {
-                pos++;
-            }
-        }
 
         // We expect exactly one ANOMALY_END.
         assert.strictEqual(blockIndicesWithEnd.length, 1, 'Should find one ANOMALY_END block');

@@ -105,11 +105,11 @@ export function decryptSection(
 }
 
 /**
- * Generates a random 16-byte salt and 8-byte file nonce.
+ * Generates a random 16-byte salt and 12-byte file nonce.
  */
 export function generateEncryptionSecrets(): { salt: Uint8Array; fileNonce: Uint8Array } {
     return {
         salt: new Uint8Array(randomBytes(16)),
-        fileNonce: new Uint8Array(randomBytes(8))
+        fileNonce: new Uint8Array(randomBytes(12))
     };
 }

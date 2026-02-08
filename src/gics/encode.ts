@@ -27,6 +27,14 @@ import {
 
 const BLOCK_SIZE = 1000;
 
+interface DataFeatures {
+    timestamps: number[];
+    snapshotLengths: number[];
+    itemIds: number[];
+    prices: number[];
+    quantities: number[];
+}
+
 type BlockProcessor = (streamId: StreamId, chunk: number[], inputData: number[], stateSnapshot: ContextSnapshot, chm: HealthMonitor) => void;
 
 export class GICSv2Encoder {
@@ -211,27 +219,43 @@ export class GICSv2Encoder {
 
         const globalCtx = this.context;
         if (!globalCtx) throw new Error("Encoder context missing");
-        const segmentCtx = new ContextV0(this.options.runId, this.mode === 'on' ? 'segment_ctx' : null); // Independent segments
+        const segmentCtx = new ContextV0(this.options.runId, this.mode === 'on' ? 'segment_ctx' : null);
         this.context = segmentCtx;
 
-        const processBlockWrapper = (streamId: StreamId, chunk: number[], inputData: number[], stateSnapshot: ContextSnapshot, chm: HealthMonitor) => {
-            const result = this.processStreamBlock(segmentCtx, streamId, chunk, inputData, stateSnapshot, chm);
-            addToStream(streamId, result.manifest, result.payload);
-            blockStats.push(result.stats as BlockStats);
-        };
-
         try {
-            // 1. Core Processing
-            this.processTimeBlocks(segmentCtx, features.timestamps, processBlockWrapper);
-            this.processSnapshotLenBlocks(features.snapshotLengths, addToStream, blockStats);
-            this.processItemIdBlocks(features.itemIds, addToStream, blockStats);
-            this.processValueBlocks(segmentCtx, features.prices, processBlockWrapper);
-            this.processQuantityBlocks(features.quantities, addToStream, blockStats);
+            this.processCoreComponents(segmentCtx, features, addToStream, blockStats);
         } finally {
             this.context = globalCtx;
         }
 
-        // 2. Wrap Sections + Integrity Chain
+        const sections = await this.wrapSections(streamBlocks);
+        const index = this.createSegmentIndex(features.itemIds);
+
+        return this.assembleSegment(sections, index, blockStats);
+    }
+
+    private processCoreComponents(
+        ctx: ContextV0,
+        features: DataFeatures,
+        addToStream: (streamId: StreamId, manifest: BlockManifestEntry, payload: Uint8Array) => void,
+        blockStats: BlockStats[]
+    ) {
+        const processBlockWrapper = (streamId: StreamId, chunk: number[], inputData: number[], stateSnapshot: ContextSnapshot, chm: HealthMonitor) => {
+            const result = this.processStreamBlock(ctx, streamId, chunk, inputData, stateSnapshot, chm);
+            addToStream(streamId, result.manifest, result.payload);
+            blockStats.push(result.stats as BlockStats);
+        };
+
+        this.processTimeBlocks(ctx, features.timestamps, processBlockWrapper);
+        this.processSnapshotLenBlocks(features.snapshotLengths, addToStream, blockStats);
+        this.processItemIdBlocks(features.itemIds, addToStream, blockStats);
+        this.processValueBlocks(ctx, features.prices, processBlockWrapper);
+        this.processQuantityBlocks(features.quantities, addToStream, blockStats);
+    }
+
+    private async wrapSections(
+        streamBlocks: Map<StreamId, { manifest: BlockManifestEntry[], payloads: Uint8Array[] }>
+    ): Promise<StreamSection[]> {
         const sections: StreamSection[] = [];
         const order = [StreamId.TIME, StreamId.SNAPSHOT_LEN, StreamId.ITEM_ID, StreamId.VALUE, StreamId.QUANTITY];
         const outerCodec = getOuterCodec(OuterCodecId.ZSTD);
@@ -242,7 +266,6 @@ export class GICSv2Encoder {
 
             const concatenated = this.concatArrays(data.payloads);
             const compressed = await outerCodec.compress(concatenated);
-
             const manifestBytes = StreamSection.serializeManifest(data.manifest);
 
             let finalPayload = compressed;
@@ -265,7 +288,7 @@ export class GICSv2Encoder {
             ]);
             const sectionHash = this.integrity.update(dataToHash);
 
-            const section = new StreamSection(
+            sections.push(new StreamSection(
                 streamId,
                 OuterCodecId.ZSTD,
                 data.manifest.length,
@@ -275,17 +298,19 @@ export class GICSv2Encoder {
                 data.manifest,
                 finalPayload,
                 authTag
-            );
-            sections.push(section);
+            ));
         }
+        return sections;
+    }
 
-        // 3. Index
+    private createSegmentIndex(itemIds: number[]): SegmentIndex {
         const bf = new BloomFilter();
-        const uniqueIds = Array.from(new Set(features.itemIds)).sort((a, b) => a - b);
+        const uniqueIds = Array.from(new Set(itemIds)).sort((a, b) => a - b);
         for (const id of uniqueIds) bf.add(id);
-        const index = new SegmentIndex(bf, uniqueIds);
+        return new SegmentIndex(bf, uniqueIds);
+    }
 
-        // 4. Assemble Segment
+    private assembleSegment(sections: StreamSection[], index: SegmentIndex, blockStats: BlockStats[]): { segment: Segment, stats: BlockStats[] } {
         const tempSerializedSections = sections.map(s => s.serialize());
         const sectionsTotalLen = tempSerializedSections.reduce((acc, b) => acc + b.length, 0);
 
@@ -293,8 +318,6 @@ export class GICSv2Encoder {
         const totalLength = 14 + sectionsTotalLen + indexBytes.length + SEGMENT_FOOTER_SIZE;
 
         const header = new SegmentHeader(14 + sectionsTotalLen, totalLength);
-
-        // CRC of all but footer
         const preFooter = this.concatArrays([
             header.serialize(),
             ...tempSerializedSections,
@@ -308,14 +331,14 @@ export class GICSv2Encoder {
         };
     }
 
-    private collectDataFeatures(snapshotsSnapshot: Snapshot[]) {
+    private collectDataFeatures(snapshots: Snapshot[]) {
         const timestamps: number[] = [];
         const snapshotLengths: number[] = [];
         const itemIds: number[] = [];
         const prices: number[] = [];
         const quantities: number[] = [];
 
-        for (const s of snapshotsSnapshot) {
+        for (const s of snapshots) {
             timestamps.push(s.timestamp);
             const sortedItems = [...s.items.entries()].sort((a, b) => a[0] - b[0]);
             snapshotLengths.push(sortedItems.length);

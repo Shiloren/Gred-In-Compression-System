@@ -13,7 +13,6 @@ export class Codecs {
         if (values.length === 0) return new Uint8Array(0);
 
         // 1. ZigZag encode to handle negative values and make them positive.
-        // Use Math.abs and multiplication to avoid 32-bit truncation
         const unsigned = values.map(v => (v >= 0 ? v * 2 : (Math.abs(v) * 2) - 1));
 
         // Find max
@@ -37,15 +36,16 @@ export class Codecs {
 
         let bitPos = 0;
         for (const val of unsigned) {
+            let currentVal = val;
             for (let b = 0; b < bits; b++) {
-                // val / 2^b instead of val >> b to support > 32 bits
-                const bit = Math.floor(val / Math.pow(2, b)) % 2;
+                const bit = currentVal % 2;
                 if (bit) {
                     const totalBit = bitPos + b;
                     const byteIdx = 1 + Math.floor(totalBit / 8);
                     const bitIdx = totalBit % 8;
-                    result[byteIdx] |= (1 << bitIdx); // bitIdx is 0-7, so bitwise is safe
+                    result[byteIdx] |= (1 << bitIdx);
                 }
+                currentVal = Math.floor(currentVal / 2);
             }
             bitPos += bits;
         }
@@ -61,6 +61,7 @@ export class Codecs {
         let bitPos = 0;
         for (let i = 0; i < count; i++) {
             let val = 0;
+            let powerOfTwo = 1;
             for (let b = 0; b < bits; b++) {
                 const totalBit = bitPos + b;
                 const byteIdx = 1 + Math.floor(totalBit / 8);
@@ -68,15 +69,14 @@ export class Codecs {
                 if (byteIdx < data.length) {
                     const bit = (data[byteIdx] >> bitIdx) & 1;
                     if (bit) {
-                        // val + 2^b instead of val |= (1 << b) to support > 32 bits
-                        val += Math.pow(2, b);
+                        val += powerOfTwo;
                     }
                 }
+                powerOfTwo *= 2;
             }
             bitPos += bits;
 
-            // Undo ZigZag (avoiding bitwise if possible, but zigzag is usually small)
-            // For large values, ZigZag is: val = (u % 2 === 0) ? u/2 : -(u+1)/2
+            // Undo ZigZag
             const decoded = (val % 2 === 0) ? (val / 2) : -((val + 1) / 2);
             result.push(decoded);
         }
@@ -96,8 +96,8 @@ export class Codecs {
     // --- DICT VARINT ---
     // Mixed stream: Dictionary Index OR Literal (Varint)
     // Format: Varint encoded integers.
-    // LSB=1 -> Dictionary Hit. Value >> 1 is Index.
-    // LSB=0 -> Literal. Value >> 1 is ZigZag(Delta). Update Dict.
+    // LSB=1 -> Dictionary Hit. Value // 2 is Index.
+    // LSB=0 -> Literal. Value // 2 is ZigZag(Delta). Update Dict.
 
     static encodeDict(values: number[], context: ContextV0): Uint8Array {
         if (values.length === 0) return new Uint8Array(0);
@@ -106,13 +106,13 @@ export class Codecs {
         for (const val of values) {
             const idx = context.dictMap.get(val);
             if (idx === undefined) {
-                // Miss: (ZigZag(val) << 1) | 0
-                const zz = (val >= 0) ? (val * 2) : (val * -2) - 1;
-                output.push(zz << 1);
+                // Miss: (ZigZag(val) * 2) + 0
+                const zz = (val >= 0) ? (val * 2) : (Math.abs(val) * 2) - 1;
+                output.push(zz * 2);
                 context.updateDictionary(val);
             } else {
-                // Hit: (idx << 1) | 1
-                output.push((idx << 1) | 1);
+                // Hit: (idx * 2) + 1
+                output.push((idx * 2) + 1);
             }
         }
 
@@ -125,9 +125,9 @@ export class Codecs {
         const result: number[] = [];
 
         for (const r of raw) {
-            if (r & 1) {
+            if (r % 2 === 1) {
                 // Hit
-                const idx = r >>> 1;
+                const idx = Math.floor(r / 2);
                 if (idx < context.dictionary.length) {
                     result.push(context.dictionary[idx]);
                 } else {
@@ -135,8 +135,8 @@ export class Codecs {
                 }
             } else {
                 // Miss
-                const zz = r >>> 1;
-                const val = (zz >>> 1) ^ -(zz & 1);
+                const zz = r / 2;
+                const val = (zz % 2 === 0) ? (zz / 2) : -((zz + 1) / 2);
                 result.push(val);
                 context.updateDictionary(val);
             }

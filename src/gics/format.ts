@@ -52,10 +52,10 @@ export interface EncryptionHeaderV3 {
     kdfId: number;       // 1: PBKDF2
     iterations: number;  // e.g. 100000
     digestId: number;    // 1: SHA-256
-    fileNonce: Uint8Array; // 8 bytes
+    fileNonce: Uint8Array; // 12 bytes
 }
 
-export const GICS_ENC_HEADER_SIZE_V3 = 1 + 16 + 32 + 1 + 4 + 1 + 8; // 63 bytes
+export const GICS_ENC_HEADER_SIZE_V3 = 1 + 16 + 32 + 1 + 4 + 1 + 12; // 67 bytes
 
 // Block Header layout:
 // [stream_id (u8)] [codec_id (u8)] [n_items (u32)] [payload_len (u32)] [flags_low (u8)]

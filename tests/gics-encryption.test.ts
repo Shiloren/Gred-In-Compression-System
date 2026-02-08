@@ -1,7 +1,6 @@
 import { Snapshot } from '../src/gics-types.js';
 import { GICSv2Encoder } from '../src/gics/encode.js';
 import { GICSv2Decoder } from '../src/gics/decode.js';
-import { IntegrityError } from '../src/gics/errors.js';
 import { describe, it, expect } from 'vitest';
 
 describe('GICS v1.3 Encryption', () => {

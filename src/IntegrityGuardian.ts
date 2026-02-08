@@ -14,6 +14,7 @@
 
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
 
 // ============================================================================
 // Configuration
@@ -109,13 +110,13 @@ export class IntegrityGuardian {
         };
 
         for (const filename of gicsFiles) {
-            const filePath = `${directory}/${filename}`;
+            const filePath = path.join(directory, filename);
             const record = await this.hashFile(filePath);
             manifest.files[filename] = record;
         }
 
         if (this.saveManifest) {
-            const manifestPath = `${directory}/gics.manifest.json`;
+            const manifestPath = path.join(directory, 'gics.manifest.json');
             await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2));
         }
 
@@ -134,7 +135,7 @@ export class IntegrityGuardian {
         const failed: Array<{ path: string; reason: string }> = [];
 
         for (const [filename, expected] of Object.entries(manifest.files)) {
-            const filePath = `${directory}/${filename}`;
+            const filePath = path.join(directory, filename);
 
             try {
                 const actual = await this.hashFile(filePath);
@@ -173,7 +174,11 @@ export class IntegrityGuardian {
      */
     async loadManifest(manifestPath: string): Promise<IntegrityManifest> {
         const content = await fs.readFile(manifestPath, 'utf-8');
-        return JSON.parse(content) as IntegrityManifest;
+        try {
+            return JSON.parse(content) as IntegrityManifest;
+        } catch (error) {
+            throw new Error(`Failed to parse integrity manifest at ${manifestPath}: ${error instanceof Error ? error.message : String(error)}`);
+        }
     }
 
     /**

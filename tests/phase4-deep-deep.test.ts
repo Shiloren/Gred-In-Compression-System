@@ -67,11 +67,13 @@ describe('Deep Dive Phase 4: Structural and CHM Validation', () => {
         let time = 1000;
         // Block 1: Stable
         for (let i = 0; i < 1000; i++) {
-            snapshots.push({ timestamp: time += 10, items: new Map([[1, { price: 10, quantity: 1 }]]) });
+            time += 10;
+            snapshots.push({ timestamp: time, items: new Map([[1, { price: 10, quantity: 1 }]]) });
         }
         // Block 2: Chaos (should trigger QUARANTINE)
         for (let i = 0; i < 1000; i++) {
-            snapshots.push({ timestamp: time += (Math.random() > 0.5 ? 1000 : 1), items: new Map([[1, { price: 10, quantity: 1 }]]) });
+            time += (Math.random() > 0.5 ? 1000 : 1);
+            snapshots.push({ timestamp: time, items: new Map([[1, { price: 10, quantity: 1 }]]) });
         }
 
         const encoder = new GICSv2Encoder();

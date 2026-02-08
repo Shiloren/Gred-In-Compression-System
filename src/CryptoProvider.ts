@@ -179,9 +179,6 @@ export class CryptoProvider {
             throw new AlgorithmNotApprovedError(algorithm, 'hash');
         }
 
-        if (this.strictMode && !CryptoProvider.isFipsMode()) {
-            console.warn('[CryptoProvider] Warning: Running in strict mode without FIPS enabled');
-        }
 
         if (this.auditLog) {
             // Audit logging removed - use external logging framework

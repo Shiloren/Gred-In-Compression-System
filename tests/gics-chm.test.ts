@@ -2,8 +2,7 @@
 import assert from 'node:assert';
 
 import { GICSv2Encoder } from '../src/gics/encode.js';
-import { StreamSection } from '../src/gics/stream-section.js';
-import { SegmentHeader } from '../src/gics/segment.js';
+import { getBlocksWithFlags, BlockFlagInfo } from './helpers/test-utils.js';
 
 // Helper to generate a stream that shifts regime
 function generateRegimeShiftData(blocksStable: number, blocksChaos: number, blocksRecovery: number) {
@@ -51,43 +50,10 @@ describe('GICS v1.2 CHM Regime Shift Verification', () => {
 
         const data = await enc.finish();
 
-        let pos = 14; // GICS_HEADER_SIZE_V3
-        let foundStart = -1;
-        let foundEnd = -1;
-        let globalBlockIndex = 0;
+        const blocksWithFlags = getBlocksWithFlags(data, 10); // Time Stream
+        const foundStart = blocksWithFlags.find((b: BlockFlagInfo) => (b.flags & 1) !== 0)?.index ?? -1;
+        const foundEnd = blocksWithFlags.find((b: BlockFlagInfo) => (b.flags & 4) !== 0)?.index ?? -1;
 
-        const dataEnd = data.length - 37; // FILE_EOS_SIZE
-
-        while (pos < dataEnd) {
-            if (data[pos] === 0x53 && data[pos + 1] === 0x47) { // SEGMENT_MAGIC "SG"
-                const segmentStart = pos;
-                const header = SegmentHeader.deserialize(data.subarray(pos, pos + 14));
-                pos += 14;
-
-                // Sections end at segmentStart + header.indexOffset
-                const sectionsEnd = segmentStart + header.indexOffset;
-                while (pos < sectionsEnd) {
-                    const section = StreamSection.deserialize(data, pos);
-                    if (section.streamId === 10) { // Time Stream
-                        for (const entry of section.manifest) {
-                            globalBlockIndex++;
-                            if ((entry.flags & 1) !== 0) foundStart = globalBlockIndex;
-                            if ((entry.flags & 4) !== 0) foundEnd = globalBlockIndex;
-                        }
-                    }
-                    pos += section.totalSize;
-                }
-
-                // Skip Index and Footer
-                // We find the next SG or EOS
-                pos = sectionsEnd;
-                while (pos < dataEnd && !(data[pos] === 0x53 && data[pos + 1] === 0x47)) {
-                    pos++;
-                }
-            } else {
-                pos++;
-            }
-        }
 
         // Assertions
         // Start: Chaos at 51. Should detect at 51 or 52.

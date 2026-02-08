@@ -7,7 +7,7 @@
 import { GICSv2Encoder } from './gics/encode.js';
 import { GICSv2Decoder } from './gics/decode.js';
 import type { Snapshot } from './gics-types.js';
-import type { GICSv2EncoderOptions, GICSv2DecoderOptions, GICSv2Logger } from './gics/types.js';
+import type { GICSv2EncoderOptions, GICSv2DecoderOptions } from './gics/types.js';
 
 // Re-export specific types and errors
 export type { Snapshot } from './gics-types.js';

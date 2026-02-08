@@ -57,6 +57,8 @@ export interface HybridConfig {
     password?: string;
     /** Compression algorithm (default: BROTLI for backward compatibility) */
     compressionAlgorithm?: CompressionAlgorithm;
+    /** Snapshots per block (default: 100) */
+    snapshotsPerBlock?: number;
 }
 
 interface BlockHeader {
@@ -202,7 +204,8 @@ export class HybridWriter {
             },
             compressionLevel: config?.compressionLevel ?? 3,
             password: config?.password ?? '',
-            compressionAlgorithm: config?.compressionAlgorithm ?? CompressionAlgorithm.BROTLI
+            compressionAlgorithm: config?.compressionAlgorithm ?? CompressionAlgorithm.BROTLI,
+            snapshotsPerBlock: config?.snapshotsPerBlock ?? 100
         };
         this.tierClassifier = new TierClassifier(this.config);
         this.heatClassifier = new HeatClassifier();
@@ -387,75 +390,9 @@ export class HybridWriter {
         }
         const sortedIds = Array.from(allItemIds).sort((a, b) => a - b);
 
-        // Separate items by tier for optimal compression
-        const hotIds: number[] = [];
-        const warmIds: number[] = [];
-        const orderedColdConstants: number[] = [];
-        const orderedColdVariables: number[] = [];
-        const ultraSparseIds: number[] = []; // NEW: Ultra sparse items
+        const { hotIds, warmIds, coldIds, ultraSparseIds, coldConstantCount, coldVariableCount } = this.groupItemsByTier(snapshots, tiers, sortedIds);
 
-        for (const itemId of sortedIds) {
-            const tier = tiers.get(itemId) ?? 'cold';
-            if (tier === 'ultra_sparse') {
-                ultraSparseIds.push(itemId);
-            } else if (tier === 'hot') {
-                hotIds.push(itemId);
-            } else if (tier === 'warm') {
-                warmIds.push(itemId);
-            } else {
-                // Pre-classify cold items to ensure 'constant' ones come first in the ID list
-                // This is CRITICAL because the Reader assumes the first 'coldConstantCount' items
-                // in the coldIds list are the ones that use the constant value stream.
-
-                // We need to peek at the data to decide
-                let isConstant = true;
-                const firstPrice = snapshots[0].items.get(itemId)?.price ?? 0;
-
-                for (let i = 1; i < snapshots.length; i++) {
-                    const p = snapshots[i].items.get(itemId)?.price ?? 0;
-                    if (p !== firstPrice) {
-                        isConstant = false;
-                        break;
-                    }
-                }
-
-                if (isConstant) orderedColdConstants.push(itemId);
-                else orderedColdVariables.push(itemId);
-            }
-        }
-        const coldIds = [...orderedColdConstants, ...orderedColdVariables];
-
-        // ================================================================
-        // NEW: ULTRA_SPARSE COO Encoding
-        // Format: [entryCount, (itemIdDelta, snapshotIdx, priceDelta, qtyDelta)...]
-        // Uses delta encoding for consecutive entries of the same item
-        // ================================================================
-        const ultraSparseCOO: number[] = [];
-        let cooEntryCount = 0;
-        let prevItemId = 0;
-        let prevPrice = 0;
-        let prevQty = 0;
-
-        for (const itemId of ultraSparseIds) {
-            for (let snapIdx = 0; snapIdx < snapshots.length; snapIdx++) {
-                const data = snapshots[snapIdx].items.get(itemId);
-                if (data) {
-                    // Store: itemIdDelta, snapshotIdx, priceDelta, qtyDelta
-                    ultraSparseCOO.push(
-                        itemId - prevItemId,
-                        snapIdx,
-                        data.price - prevPrice,
-                        data.quantity - prevQty
-                    );
-
-                    prevItemId = itemId;
-                    prevPrice = data.price;
-                    prevQty = data.quantity;
-                    cooEntryCount++;
-                }
-            }
-        }
-        const ultraSparseEncoded = encodeVarint([cooEntryCount, ...ultraSparseCOO]);
+        const ultraSparseEncoded = this.encodeUltraSparseCOO(ultraSparseIds, snapshots);
 
         // Encode timestamps (DoD) - shared across all tiers
         const timestamps = snapshots.map(s => s.timestamp);
@@ -511,12 +448,9 @@ export class HybridWriter {
         const warmValuesEncoded = encodeVarint(warmValues);
 
         // COLD tier: ULTRA AGGRESSIVE - most items are constant!
-        // Format: [constantCount][constant values...][variableCount][variable data...]
         const coldConstants: number[] = [];
         const coldVariableBitmaps: Uint8Array[] = [];
         const coldVariableValues: number[] = [];
-        let coldConstantCount = 0;
-        let coldVariableCount = 0;
 
         for (const itemId of coldIds) {
             const prices: number[] = [];
@@ -524,14 +458,9 @@ export class HybridWriter {
                 prices.push(snap.items.get(itemId)?.price ?? 0);
             }
 
-            // Check if constant
-            const unique = new Set(prices);
-            if (unique.size === 1) {
-                // CONSTANT: Just store the value once. Massive savings!
+            if (this.isItemConstant(itemId, snapshots)) {
                 coldConstants.push(prices[0]);
-                coldConstantCount++;
             } else {
-                // Variable: Use sparse bitmap like WARM
                 const bitmap = new Uint8Array(Math.ceil(snapshots.length / 8));
                 let prev = prices[0];
                 coldVariableValues.push(prev);
@@ -544,7 +473,6 @@ export class HybridWriter {
                     }
                 }
                 coldVariableBitmaps.push(bitmap);
-                coldVariableCount++;
             }
         }
 
@@ -553,25 +481,7 @@ export class HybridWriter {
         const coldVariableValuesEncoded = encodeVarint(coldVariableValues);
 
         // QUANTITIES: RLE for all items (quantities typically stable)
-        const allQuantitiesRLE: number[] = [];
-        for (const itemId of allIdsInOrder) {
-            const quantities: number[] = [];
-            for (const snap of snapshots) {
-                quantities.push(snap.items.get(itemId)?.quantity ?? 0);
-            }
-            // RLE encode
-            let i = 0;
-            while (i < quantities.length) {
-                const val = quantities[i];
-                let count = 1;
-                while (i + count < quantities.length && quantities[i + count] === val && count < 255) {
-                    count++;
-                }
-                allQuantitiesRLE.push(count, val);
-                i += count;
-            }
-        }
-        const quantitiesEncoded = encodeVarint(allQuantitiesRLE);
+        const quantitiesEncoded = this.encodeRLE(allIdsInOrder, snapshots);
 
         // Update item index (includes ULTRA_SPARSE items now)
         let itemPosition = 0;
@@ -584,28 +494,25 @@ export class HybridWriter {
             }
             entry.blockPositions.set(blockId, itemPosition++);
         }
-        // Also index ultra_sparse items (they still need to be findable)
         for (const itemId of ultraSparseIds) {
             let entry = this.itemIndex.get(itemId);
             if (!entry) {
                 entry = { itemId, tier: 'ultra_sparse', blockPositions: new Map() };
                 this.itemIndex.set(itemId, entry);
             }
-            entry.blockPositions.set(blockId, -1); // -1 signals "use COO lookup"
+            entry.blockPositions.set(blockId, -1);
         }
 
-        // Combine all data with detailed header
-        // Header layout: 6×uint16 (12 bytes) + 10×uint32 (40 bytes) = 52 bytes (EXTENDED for ULTRA_SPARSE)
         const header = new Uint8Array(52);
         const headerView = new DataView(header.buffer);
         let hOffset = 0;
 
-        headerView.setUint16(hOffset, snapshots.length, true); hOffset += 2;      // snapshotCount
-        headerView.setUint16(hOffset, allIdsInOrder.length, true); hOffset += 2;  // totalItemCount (excluding ultra_sparse)
-        headerView.setUint16(hOffset, hotIds.length, true); hOffset += 2;         // hotCount
-        headerView.setUint16(hOffset, warmIds.length, true); hOffset += 2;        // warmCount
-        headerView.setUint16(hOffset, coldConstantCount, true); hOffset += 2;     // coldConstantCount
-        headerView.setUint16(hOffset, coldVariableCount, true); hOffset += 2;     // coldVariableCount
+        headerView.setUint16(hOffset, snapshots.length, true); hOffset += 2;
+        headerView.setUint16(hOffset, allIdsInOrder.length, true); hOffset += 2;
+        headerView.setUint16(hOffset, hotIds.length, true); hOffset += 2;
+        headerView.setUint16(hOffset, warmIds.length, true); hOffset += 2;
+        headerView.setUint16(hOffset, coldConstantCount, true); hOffset += 2;
+        headerView.setUint16(hOffset, coldVariableCount, true); hOffset += 2;
 
         headerView.setUint32(hOffset, timestampsEncoded.length, true); hOffset += 4;
         headerView.setUint32(hOffset, idsEncoded.length, true); hOffset += 4;
@@ -616,81 +523,126 @@ export class HybridWriter {
         headerView.setUint32(hOffset, coldVariableBitmapCombined.length, true); hOffset += 4;
         headerView.setUint32(hOffset, coldVariableValuesEncoded.length, true); hOffset += 4;
         headerView.setUint32(hOffset, quantitiesEncoded.length, true); hOffset += 4;
-        headerView.setUint32(hOffset, ultraSparseEncoded.length, true);  // NEW: ULTRA_SPARSE length
+        headerView.setUint32(hOffset, ultraSparseEncoded.length, true);
 
-        // Combine all sections (now includes ultraSparseEncoded)
-        const totalSize = header.length +
-            timestampsEncoded.length + idsEncoded.length +
-            hotEncoded.length + warmBitmapCombined.length + warmValuesEncoded.length +
-            coldConstantsEncoded.length + coldVariableBitmapCombined.length + coldVariableValuesEncoded.length +
-            quantitiesEncoded.length + ultraSparseEncoded.length;
+        const combined = this.concatArrays([
+            header, timestampsEncoded, idsEncoded, hotEncoded,
+            warmBitmapCombined, warmValuesEncoded, coldConstantsEncoded,
+            coldVariableBitmapCombined, coldVariableValuesEncoded,
+            quantitiesEncoded, ultraSparseEncoded
+        ]);
 
-        const combined = new Uint8Array(totalSize);
-        let offset = 0;
-        combined.set(header, offset); offset += header.length;
-        combined.set(timestampsEncoded, offset); offset += timestampsEncoded.length;
-        combined.set(idsEncoded, offset); offset += idsEncoded.length;
-        combined.set(hotEncoded, offset); offset += hotEncoded.length;
-        combined.set(warmBitmapCombined, offset); offset += warmBitmapCombined.length;
-        combined.set(warmValuesEncoded, offset); offset += warmValuesEncoded.length;
-        combined.set(coldConstantsEncoded, offset); offset += coldConstantsEncoded.length;
-        combined.set(coldVariableBitmapCombined, offset); offset += coldVariableBitmapCombined.length;
-        combined.set(coldVariableValuesEncoded, offset); offset += coldVariableValuesEncoded.length;
-        combined.set(quantitiesEncoded, offset); offset += quantitiesEncoded.length;
-        combined.set(ultraSparseEncoded, offset); // NEW: Append ULTRA_SPARSE COO
+        return this.wrapAndEncrypt(combined, blockId);
+    }
 
-        // Add per-block CRC32 for granular corruption detection
-        const blockCrc = crc32(combined);
-        const withCrc = new Uint8Array(combined.length + 4);
-        withCrc.set(combined);
-        new DataView(withCrc.buffer).setUint32(combined.length, blockCrc, true);
+    private groupItemsByTier(snapshots: Snapshot[], tiers: Map<number, ItemTier>, sortedIds: number[]) {
+        const hotIds: number[] = [];
+        const warmIds: number[] = [];
+        const orderedColdConstants: number[] = [];
+        const orderedColdVariables: number[] = [];
+        const ultraSparseIds: number[] = [];
 
-        // Compress with Brotli (node:zlib)
-        // Use configured level as quality hint (1-9 maps roughly OK, max is 11)
-        // Ignoring level for now or using default
+        for (const itemId of sortedIds) {
+            const tier = tiers.get(itemId) ?? 'cold';
+            if (tier === 'ultra_sparse') {
+                ultraSparseIds.push(itemId);
+            } else if (tier === 'hot') {
+                hotIds.push(itemId);
+            } else if (tier === 'warm') {
+                warmIds.push(itemId);
+            } else {
+                if (this.isItemConstant(itemId, snapshots)) {
+                    orderedColdConstants.push(itemId);
+                } else {
+                    orderedColdVariables.push(itemId);
+                }
+            }
+        }
+        return {
+            hotIds, warmIds, ultraSparseIds,
+            coldIds: [...orderedColdConstants, ...orderedColdVariables],
+            coldConstantCount: orderedColdConstants.length,
+            coldVariableCount: orderedColdVariables.length
+        };
+    }
+
+    private isItemConstant(itemId: number, snapshots: Snapshot[]): boolean {
+        const firstPrice = snapshots[0].items.get(itemId)?.price ?? 0;
+        for (let i = 1; i < snapshots.length; i++) {
+            if ((snapshots[i].items.get(itemId)?.price ?? 0) !== firstPrice) return false;
+        }
+        return true;
+    }
+
+    private encodeUltraSparseCOO(ultraSparseIds: number[], snapshots: Snapshot[]): Uint8Array {
+        const ultraSparseCOO: number[] = [];
+        let cooEntryCount = 0;
+        let prevItemId = 0;
+        let prevPrice = 0;
+        let prevQty = 0;
+
+        for (const itemId of ultraSparseIds) {
+            for (let snapIdx = 0; snapIdx < snapshots.length; snapIdx++) {
+                const data = snapshots[snapIdx].items.get(itemId);
+                if (data) {
+                    ultraSparseCOO.push(
+                        itemId - prevItemId,
+                        snapIdx,
+                        data.price - prevPrice,
+                        data.quantity - prevQty
+                    );
+                    prevItemId = itemId;
+                    prevPrice = data.price;
+                    prevQty = data.quantity;
+                    cooEntryCount++;
+                }
+            }
+        }
+        return encodeVarint([cooEntryCount, ...ultraSparseCOO]);
+    }
+
+    private async wrapAndEncrypt(data: Uint8Array, blockId: number): Promise<Uint8Array> {
+        const blockCrc = crc32(data);
+        const withCrc = new Uint8Array(data.length + 4);
+        withCrc.set(data);
+        new DataView(withCrc.buffer).setUint32(data.length, blockCrc, true);
+
         const compressed = await this.compressData(withCrc);
-
         let payload: Buffer;
+
         if (this.encryptionMode === EncryptionMode.AES_256_GCM) {
-            // Phase 2: DETERMINISTIC IV + AAD
-            const blockId = this.blocks.length;
             const iv = keyService.generateDeterministicIV(this.fileNonce!, blockId);
             const key = keyService.getKey();
-
-            // AAD: Authenticate block context to prevent reordering/injection
-            const aad = Buffer.alloc(27);
-            aad.write('GICS', 0);                           // 4 bytes magic
-            aad.writeUInt8(VERSION, 4);                     // 1 byte version
-            aad.writeUInt8(this.encryptionMode, 5);         // 1 byte mode
-            this.salt!.copy(aad, 6);                        // 16 bytes salt
-            aad.writeUInt32LE(blockId, 22);                 // 4 bytes blockIndex
-            aad.writeUInt8(BlockType.DATA, 26);             // 1 byte blockType
+            const aad = this.createBlockAAD(blockId);
 
             const cipher = createCipheriv('aes-256-gcm', key, iv);
             cipher.setAAD(aad);
-
             const ciphertext = Buffer.concat([cipher.update(compressed), cipher.final()]);
-            const authTag = cipher.getAuthTag();
-
-            payload = Buffer.concat([iv, ciphertext, authTag]);
+            payload = Buffer.concat([iv, ciphertext, cipher.getAuthTag()]);
         } else {
             payload = compressed;
         }
 
-        // WRAP IN BLOCK HEADER
-        // [Type(1)][Size(4)][CRC(4)]
-        const blockHeaderWrapper = new Uint8Array(9);
-        const view = new DataView(blockHeaderWrapper.buffer);
+        const wrapper = new Uint8Array(9);
+        const view = new DataView(wrapper.buffer);
         view.setUint8(0, BlockType.DATA);
         view.setUint32(1, payload.length, true);
         view.setUint32(5, crc32(payload), true);
 
-        return Buffer.concat([blockHeaderWrapper, payload]);
+        return Buffer.concat([wrapper, payload]);
     }
 
-    /**
-     * Delta-of-delta encoding
-     */
+    private createBlockAAD(blockId: number): Buffer {
+        const aad = Buffer.alloc(27);
+        aad.write('GICS', 0);
+        aad.writeUInt8(VERSION, 4);
+        aad.writeUInt8(this.encryptionMode, 5);
+        this.salt!.copy(aad, 6);
+        aad.writeUInt32LE(blockId, 22);
+        aad.writeUInt8(BlockType.DATA, 26);
+        return aad;
+    }
+
     private encodeDoD(values: number[]): number[] {
         if (values.length === 0) return [];
         if (values.length === 1) return [values[0]];
@@ -704,68 +656,27 @@ export class HybridWriter {
         return deltas;
     }
 
-    /**
-     * RLE encoding for quantities
-     */
-    private encodeRLE(values: number[]): Uint8Array {
+    private encodeRLE(allIdsInOrder: number[], snapshots: Snapshot[]): Uint8Array {
         const runs: number[] = [];
-        let i = 0;
-
-        while (i < values.length) {
-            const val = values[i];
-            let count = 1;
-            while (i + count < values.length && values[i + count] === val && count < 255) {
-                count++;
+        for (const itemId of allIdsInOrder) {
+            const quantities: number[] = [];
+            for (const snap of snapshots) {
+                quantities.push(snap.items.get(itemId)?.quantity ?? 0);
             }
-            runs.push(count, val);
-            i += count;
+            let i = 0;
+            while (i < quantities.length) {
+                const val = quantities[i];
+                let count = 1;
+                while (i + count < quantities.length && quantities[i + count] === val && count < 255) {
+                    count++;
+                }
+                runs.push(count, val);
+                i += count;
+            }
         }
-
         return encodeVarint(runs);
     }
 
-    /**
-     * Combine block data into a single buffer
-     */
-    private combineBlockData(
-        timestamps: number[],
-        ids: Uint8Array,
-        prices: Uint8Array[],
-        quantities: Uint8Array[],
-        snapshotCount: number,
-        itemCount: number
-    ): Uint8Array {
-        const timestampsEncoded = encodeVarint(timestamps);
-        const pricesCombined = this.concatArrays(prices);
-        const quantitiesCombined = this.concatArrays(quantities);
-
-        // Header: snapshotCount(2) + itemCount(2) + lengths(4×4)
-        const headerSize = 20;
-        const totalSize = headerSize + timestampsEncoded.length + ids.length +
-            pricesCombined.length + quantitiesCombined.length;
-
-        const buffer = new Uint8Array(totalSize);
-        const view = new DataView(buffer.buffer);
-        let offset = 0;
-
-        view.setUint16(offset, snapshotCount, true); offset += 2;
-        view.setUint16(offset, itemCount, true); offset += 2;
-        view.setUint32(offset, timestampsEncoded.length, true); offset += 4;
-        view.setUint32(offset, ids.length, true); offset += 4;
-        view.setUint32(offset, pricesCombined.length, true); offset += 4;
-        view.setUint32(offset, quantitiesCombined.length, true); offset += 4;
-
-        buffer.set(timestampsEncoded, offset); offset += timestampsEncoded.length;
-        buffer.set(ids, offset); offset += ids.length;
-        buffer.set(pricesCombined, offset); offset += pricesCombined.length;
-        buffer.set(quantitiesCombined, offset);
-
-        return buffer;
-    }
-
-    /**
-     * Concatenate multiple Uint8Arrays
-     */
     private concatArrays(arrays: Uint8Array[]): Uint8Array {
         const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0);
         const result = new Uint8Array(totalLength);
@@ -777,27 +688,25 @@ export class HybridWriter {
         return result;
     }
 
-    /**
-     * Finalize and get the complete GICS file
-     */
     async finish(): Promise<Uint8Array> {
-        // Flush any remaining snapshots
         if (this.snapshots.length > 0) {
-            await this.flushBlock();
+            const startTimestamp = this.snapshots[0].timestamp;
+            const blockId = this.blocks.length;
+            const tiers = this.tierClassifier.analyzeSnapshots(this.snapshots);
+            const blockData = await this.encodeBlock(this.snapshots, tiers, blockId);
+            const offset = this.blocks.reduce((sum, b) => sum + b.length, 0);
+            this.temporalIndex.push({ blockId, startTimestamp, offset });
+            this.blocks.push(blockData);
+            this.snapshots = [];
         }
 
-        // Build file structure
         const temporalIndexData = this.encodeTemporalIndex();
         const itemIndexData = this.encodeItemIndex();
         const blocksData = this.concatArrays(this.blocks);
 
-        // Offsets
         const headerBaseSize = 36;
-        // Adjust for encryption fields if present
         let currentHeaderSize = headerBaseSize;
         if (this.encryptionMode === EncryptionMode.AES_256_GCM) {
-            // Phase 2 header extension:
-            // +1 (Mode) + 16 (Salt) + 32 (AuthVerify) + 1 (KDF_ID) + 4 (Iterations) + 1 (DigestId) + 8 (FileNonce)
             currentHeaderSize += 1 + 16 + AUTH_VERIFY_LEN + 1 + 4 + 1 + FILE_NONCE_LEN;
         }
 
@@ -805,49 +714,40 @@ export class HybridWriter {
         const itemIndexOffset = temporalIndexOffset + temporalIndexData.length;
         const dataOffset = itemIndexOffset + itemIndexData.length;
 
-        // Build file
-        const totalSize = dataOffset + blocksData.length + 4; // +4 for CRC32
+        const totalSize = dataOffset + blocksData.length + 4;
         const buffer = new Uint8Array(totalSize);
         const view = new DataView(buffer.buffer);
         let offset = 0;
 
-        // Header
         buffer.set(MAGIC, offset); offset += 4;
         buffer[offset++] = VERSION;
-        buffer[offset++] = this.config.compressionAlgorithm; // FLAGS = compression algorithm
+        buffer[offset++] = this.config.compressionAlgorithm ?? 0;
         view.setUint16(offset, this.blocks.length, true); offset += 2;
         view.setUint32(offset, this.itemIndex.size, true); offset += 4;
 
-        // Write Offsets
         view.setUint32(offset, temporalIndexOffset, true); offset += 4;
-        view.setUint32(offset, 0, true); offset += 4; // High 32 bits
+        view.setUint32(offset, 0, true); offset += 4;
         view.setUint32(offset, itemIndexOffset, true); offset += 4;
         view.setUint32(offset, 0, true); offset += 4;
         view.setUint32(offset, dataOffset, true); offset += 4;
         view.setUint32(offset, 0, true); offset += 4;
 
-        // Encryption Header Extensions (Phase 2)
         if (this.encryptionMode === EncryptionMode.AES_256_GCM) {
-            buffer[offset++] = this.encryptionMode;                          // 1 byte
-            if (this.salt) buffer.set(this.salt, offset); offset += 16;      // 16 bytes
-            if (this.authVerify) buffer.set(this.authVerify, offset); offset += AUTH_VERIFY_LEN;  // 32 bytes
-            buffer[offset++] = KDF_CONFIG.id;                                // 1 byte KDF ID
-            view.setUint32(offset, KDF_CONFIG.iterations, true); offset += 4;// 4 bytes Iterations
-            buffer[offset++] = KDF_CONFIG.digestId;                          // 1 byte Digest ID
-            if (this.fileNonce) {
-                buffer.set(this.fileNonce, offset);
-            }
-            offset += FILE_NONCE_LEN;  // 8 bytes
+            buffer[offset++] = this.encryptionMode;
+            if (this.salt) buffer.set(this.salt, offset); offset += 16;
+            if (this.authVerify) buffer.set(this.authVerify, offset); offset += AUTH_VERIFY_LEN;
+            buffer[offset++] = KDF_CONFIG.id;
+            view.setUint32(offset, KDF_CONFIG.iterations, true); offset += 4;
+            buffer[offset++] = KDF_CONFIG.digestId;
+            if (this.fileNonce) buffer.set(this.fileNonce, offset);
+            offset += FILE_NONCE_LEN;
         }
 
-        // Data sections
         buffer.set(temporalIndexData, temporalIndexOffset);
         buffer.set(itemIndexData, itemIndexOffset);
         buffer.set(blocksData, dataOffset);
 
-        // Calculate CRC32 of all data except the CRC field itself
-        const dataToCheck = buffer.slice(0, totalSize - 4);
-        const checksum = crc32(dataToCheck);
+        const checksum = crc32(buffer.slice(0, totalSize - 4));
         view.setUint32(totalSize - 4, checksum, true);
 
         return buffer;
@@ -864,12 +764,17 @@ export class HybridWriter {
             blocks: Array<{ start: number; payloadStart: number; payloadLen: number }>;
         };
     }> {
-        // Flush any remaining snapshots
         if (this.snapshots.length > 0) {
-            await this.flushBlock();
+            const startTimestamp = this.snapshots[0].timestamp;
+            const blockId = this.blocks.length;
+            const tiers = this.tierClassifier.analyzeSnapshots(this.snapshots);
+            const blockData = await this.encodeBlock(this.snapshots, tiers, blockId);
+            const offset = this.blocks.reduce((sum, b) => sum + b.length, 0);
+            this.temporalIndex.push({ blockId, startTimestamp, offset });
+            this.blocks.push(blockData);
+            this.snapshots = [];
         }
 
-        // Build file structure (duplicate of finish() to capture layout)
         const temporalIndexData = this.encodeTemporalIndex();
         const itemIndexData = this.encodeItemIndex();
         const blocksData = this.concatArrays(this.blocks);
@@ -898,7 +803,7 @@ export class HybridWriter {
             blockOffset += block.length;
         }
 
-        // Build file (same as finish())
+        // Build file
         const totalSize = dataOffset + blocksData.length + 4;
         const buffer = new Uint8Array(totalSize);
         const view = new DataView(buffer.buffer);
@@ -906,9 +811,10 @@ export class HybridWriter {
 
         buffer.set(MAGIC, offset); offset += 4;
         buffer[offset++] = VERSION;
-        buffer[offset++] = 0x00;
+        buffer[offset++] = this.config.compressionAlgorithm ?? 0;
         view.setUint16(offset, this.blocks.length, true); offset += 2;
         view.setUint32(offset, this.itemIndex.size, true); offset += 4;
+
         view.setUint32(offset, temporalIndexOffset, true); offset += 4;
         view.setUint32(offset, 0, true); offset += 4;
         view.setUint32(offset, itemIndexOffset, true); offset += 4;
@@ -923,9 +829,7 @@ export class HybridWriter {
             buffer[offset++] = KDF_CONFIG.id;
             view.setUint32(offset, KDF_CONFIG.iterations, true); offset += 4;
             buffer[offset++] = KDF_CONFIG.digestId;
-            if (this.fileNonce) {
-                buffer.set(this.fileNonce, offset);
-            }
+            if (this.fileNonce) buffer.set(this.fileNonce, offset);
             offset += FILE_NONCE_LEN;
         }
 
@@ -933,8 +837,7 @@ export class HybridWriter {
         buffer.set(itemIndexData, itemIndexOffset);
         buffer.set(blocksData, dataOffset);
 
-        const dataToCheck = buffer.slice(0, totalSize - 4);
-        const checksum = crc32(dataToCheck);
+        const checksum = crc32(buffer.slice(0, totalSize - 4));
         view.setUint32(totalSize - 4, checksum, true);
 
         return {
@@ -943,57 +846,41 @@ export class HybridWriter {
         };
     }
 
-    /**
-     * Encode temporal index
-     */
     private encodeTemporalIndex(): Uint8Array {
-        const entrySize = 10; // blockId(2) + timestamp(4) + offset(4)
+        const entrySize = 10;
         const buffer = new Uint8Array(this.temporalIndex.length * entrySize);
         const view = new DataView(buffer.buffer);
-
         let offset = 0;
         for (const entry of this.temporalIndex) {
             view.setUint16(offset, entry.blockId, true); offset += 2;
             view.setUint32(offset, entry.startTimestamp, true); offset += 4;
             view.setUint32(offset, entry.offset, true); offset += 4;
         }
-
         return buffer;
     }
 
-    /**
-     * Encode item index
-     */
     private encodeItemIndex(): Uint8Array {
         const entries: number[] = [];
-
         for (const [itemId, entry] of Array.from(this.itemIndex)) {
-            const tierValue = entry.tier === 'hot' ? 0 : (entry.tier === 'warm' ? 1 : 2);
-            entries.push(
-                itemId,
-                tierValue,
-                entry.blockPositions.size
-            );
+            let tierValue: number;
+            if (entry.tier === 'hot') tierValue = 0;
+            else if (entry.tier === 'warm') tierValue = 1;
+            else if (entry.tier === 'cold') tierValue = 2;
+            else tierValue = 3;
 
+            entries.push(itemId, tierValue, entry.blockPositions.size);
             for (const [blockId, pos] of Array.from(entry.blockPositions)) {
-                entries.push(blockId);
-                entries.push(pos);
+                entries.push(blockId, pos);
             }
         }
-
         return encodeVarint(entries);
     }
 
-    /**
-     * Get compression statistics
-     */
     getStats(): GICSStats {
-        const rawSize = this.calculateRawSize();
-        // Placeholder stats
         return {
-            snapshotCount: this.snapshots.length + (this.blocks.length * 7 * 24), // Approx
+            snapshotCount: this.blocks.length * this.config.snapshotsPerBlock!, // Approximation
             itemCount: this.itemIndex.size,
-            rawSizeBytes: rawSize,
+            rawSizeBytes: 0,
             compressedSizeBytes: this.blocks.reduce((a, b) => a + b.length, 0),
             compressionRatio: 0,
             avgChangeRate: 0,
@@ -1013,7 +900,7 @@ export class HybridWriter {
 export class HybridReader {
     private readonly buffer: Uint8Array;
     private readonly view: DataView;
-    private header: any; // Using implicit type for internal header
+    // Header structure is parsed into internal state, no dedicated object needed
     private readonly temporalIndex: TemporalIndexEntry[] = [];
     private readonly itemIndex: Map<number, ItemIndexEntry> = new Map();
     private encryptionMode: EncryptionMode = EncryptionMode.NONE;

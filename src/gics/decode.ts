@@ -112,7 +112,7 @@ export class GICSv2Decoder {
         this.getUint8(); // kdfId
         const iterations = this.getUint32();
         this.getUint8(); // digestId
-        this.encryptionFileNonce = this.data.slice(this.pos, this.pos + 8); this.pos += 8;
+        this.encryptionFileNonce = this.data.slice(this.pos, this.pos + 12); this.pos += 12;
 
         this.encryptionKey = deriveKey(this.options.password, salt, iterations);
         if (!verifyAuth(this.encryptionKey, authVerify)) {
@@ -157,18 +157,15 @@ export class GICSv2Decoder {
      */
     async verifyIntegrityOnly(): Promise<boolean> {
         try {
-            this.pos = 0;
-            // Basic header check
-            if (this.data.length < GICS_HEADER_SIZE_V3) return false;
-            const magicMatch = GICS_MAGIC_V2.every((b, i) => this.data[i] === b);
-            if (!magicMatch) return false;
+            if (!this.verifyMagic()) return false;
             this.pos = 4;
             const version = this.getUint8();
-            if (version !== 0x03) return false; // verify() primarily for v1.3
+            if (version !== 0x03) return false;
 
             this.pos = 5;
             const flags = this.getUint32();
             this.isEncrypted = (flags & GICS_FLAGS_V3.ENCRYPTED) !== 0;
+
             this.pos = GICS_HEADER_SIZE_V3;
             if (this.isEncrypted) this.pos += GICS_ENC_HEADER_SIZE_V3;
 
@@ -176,38 +173,33 @@ export class GICSv2Decoder {
             const integrity = new IntegrityChain();
 
             while (this.pos < dataEnd) {
-                const segmentStart = this.pos;
-                const header = SegmentHeader.deserialize(this.data.subarray(this.pos, this.pos + 14));
-                this.pos += 14;
-                const absoluteIndexOffset = segmentStart + header.indexOffset;
-
-                const sections = this.extractSections(segmentStart + 14, absoluteIndexOffset);
-                const nextSegmentPos = this.locateNextSegment(this.pos + 14);
-
-                const footerBytes = this.data.subarray(nextSegmentPos - SEGMENT_FOOTER_SIZE, nextSegmentPos);
-                if (footerBytes.length < SEGMENT_FOOTER_SIZE) return false;
-                const footer = SegmentFooter.deserialize(footerBytes);
-
-                // 1. Verify CRC
-                const preFooter = this.data.subarray(segmentStart, nextSegmentPos - SEGMENT_FOOTER_SIZE);
-                if (calculateCRC32(preFooter) !== footer.crc32) return false;
-
-                // 2. Update Chain and verify root
-                this.updateIntegrityChain(integrity, sections);
-                if (!this.compareHashes(integrity.getRootHash(), footer.rootHash)) return false;
-
-                this.pos = nextSegmentPos;
+                const result = this.verifySegmentAt(this.pos, integrity);
+                if (!result.success) return false;
+                this.pos = result.nextPos;
             }
 
-            // 3. Verify File EOS
-            const eosBytes = this.data.subarray(dataEnd, this.data.length);
-            if (eosBytes[0] !== GICS_EOS_MARKER) return false;
-            const fileRootHash = eosBytes.slice(1, 33);
-            if (!this.compareHashes(fileRootHash, integrity.getRootHash())) return false;
-
+            this.verifyFileEOS(integrity);
             return true;
         } catch {
             return false;
+        }
+    }
+
+    private verifySegmentAt(pos: number, integrity: IntegrityChain): { success: boolean, nextPos: number } {
+        try {
+            const { sections, footer, nextPos, segmentStart, footerPos } = this.parseSegmentParts(pos);
+
+            // 1. Verify CRC
+            const preFooter = this.data.subarray(segmentStart, footerPos);
+            if (calculateCRC32(preFooter) !== footer.crc32) return { success: false, nextPos: pos };
+
+            // 2. Update Chain and verify root
+            this.updateIntegrityChain(integrity, sections);
+            if (!this.compareHashes(integrity.getRootHash(), footer.rootHash)) return { success: false, nextPos: pos };
+
+            return { success: true, nextPos };
+        } catch {
+            return { success: false, nextPos: pos };
         }
     }
 
@@ -267,33 +259,13 @@ export class GICSv2Decoder {
     }
 
     private async decodeSegment(skipIfMissing: boolean, itemId?: number, chain?: IntegrityChain): Promise<{ snapshots: Snapshot[], nextPos: number, index: SegmentIndex }> {
-        const segmentStart = this.pos;
-        const header = SegmentHeader.deserialize(this.data.subarray(this.pos, this.pos + 14));
-        this.pos += 14;
-        const absoluteIndexOffset = segmentStart + header.indexOffset;
+        const { sections, index, footer, nextPos, segmentStart } = this.parseSegmentParts(this.pos);
 
-        const sections = this.extractSections(segmentStart + 14, absoluteIndexOffset);
-        const nextSegmentPos = this.locateNextSegment(this.pos + 14);
-
-        const indexBytes = this.data.subarray(absoluteIndexOffset, nextSegmentPos - SEGMENT_FOOTER_SIZE);
-        if (indexBytes.length === 0 && absoluteIndexOffset < nextSegmentPos - SEGMENT_FOOTER_SIZE) {
-            throw new IncompleteDataError("Segment Index truncated");
-        }
-        const index = SegmentIndex.deserialize(indexBytes);
-        const footerBytes = this.data.subarray(nextSegmentPos - SEGMENT_FOOTER_SIZE, nextSegmentPos);
-        if (footerBytes.length < SEGMENT_FOOTER_SIZE) throw new IncompleteDataError("Segment Footer truncated");
-        const footer = SegmentFooter.deserialize(footerBytes);
-
-        this.verifySegmentIntegrity(segmentStart, nextSegmentPos, footer);
-
-        // Sanity check: indexOffset must point before the footer
-        if (absoluteIndexOffset >= nextSegmentPos - SEGMENT_FOOTER_SIZE) {
-            throw new IntegrityError("Segment index offset out of bounds");
-        }
+        this.verifySegmentIntegrity(segmentStart, nextPos, footer);
 
         if (skipIfMissing && itemId !== undefined && !index.contains(itemId)) {
             if (chain) this.updateIntegrityChain(chain, sections);
-            return { snapshots: [], nextPos: nextSegmentPos, index };
+            return { snapshots: [], nextPos, index };
         }
 
         const data = await this.decompressAndDecode(sections, chain);
@@ -303,7 +275,36 @@ export class GICSv2Decoder {
             snapshots = snapshots.filter(s => s.items.has(itemId));
         }
 
-        return { snapshots, nextPos: nextSegmentPos, index };
+        return { snapshots, nextPos, index };
+    }
+
+    private parseSegmentParts(pos: number): {
+        header: SegmentHeader,
+        sections: StreamSection[],
+        index: SegmentIndex,
+        footer: SegmentFooter,
+        nextPos: number,
+        segmentStart: number,
+        footerPos: number
+    } {
+        const segmentStart = pos;
+        const header = SegmentHeader.deserialize(this.data.subarray(pos, pos + 14));
+        const absoluteIndexOffset = segmentStart + header.indexOffset;
+        const sections = this.extractSections(segmentStart + 14, absoluteIndexOffset);
+
+        const nextPos = this.locateNextSegment(pos + 14);
+        const footerPos = nextPos - SEGMENT_FOOTER_SIZE;
+        const footerBytes = this.data.subarray(footerPos, nextPos);
+        if (footerBytes.length < SEGMENT_FOOTER_SIZE) throw new IncompleteDataError("Segment Footer truncated");
+        const footer = SegmentFooter.deserialize(footerBytes);
+
+        const indexBytes = this.data.subarray(absoluteIndexOffset, footerPos);
+        if (indexBytes.length === 0 && absoluteIndexOffset < footerPos) {
+            throw new IncompleteDataError("Segment Index truncated");
+        }
+        const index = SegmentIndex.deserialize(indexBytes);
+
+        return { header, sections, index, footer, nextPos, segmentStart, footerPos };
     }
 
     private extractSections(start: number, end: number): StreamSection[] {

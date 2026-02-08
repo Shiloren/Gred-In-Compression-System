@@ -1,4 +1,4 @@
-﻿import { HybridWriter, HybridReader } from '../src/gics-hybrid.js';
+﻿import { HybridWriter } from '../src/gics-hybrid.js';
 import type { Snapshot } from '../src/gics-types.js';
 
 function getVolatilityParams(
