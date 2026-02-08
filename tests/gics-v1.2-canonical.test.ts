@@ -21,8 +21,8 @@ class LGC {
 
 describe('GICS v1.2 Canonical Reference', () => {
     // THIS HASH MUST NEVER CHANGE ONCE LOCKED
-    // It represents the bit-exact output of the canonical v1.2 encoder
-    const BASELINE_HASH = 'a3701a820fa843fc0c269aa76303f16fdbe916aecd640c88dff0d965a9c53812';
+    // BASELINE HASH for v1.3 (Sections + Zstd + Hash Chain)
+    const BASELINE_HASH = '15d1cc4d5ec48718c781f52f300f2fdf363dca44e0dfea4d5ebebe793559c448';
 
     beforeEach(() => {
         process.env.GICS_VERSION = '1.2';

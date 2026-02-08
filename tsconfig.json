@@ -9,13 +9,17 @@
         "strict": true,
         "esModuleInterop": true,
         "skipLibCheck": true,
-        "forceConsistentCasingInFileNames": true
+        "forceConsistentCasingInFileNames": true,
+        "types": [
+            "node",
+            "vitest/globals"
+        ]
     },
     "include": [
-        "src/**/*"
+        "src/**/*",
+        "tests/**/*"
     ],
     "exclude": [
-        "node_modules",
-        "tests"
+        "node_modules"
     ]
 }

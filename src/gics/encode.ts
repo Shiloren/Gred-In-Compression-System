@@ -1,11 +1,14 @@
 import { Snapshot } from '../gics-types.js';
 import { encodeVarint } from '../gics-utils.js';
-import { GICS_MAGIC_V2, V12_FLAGS, StreamId, CodecId, GICS_VERSION_BYTE, BLOCK_HEADER_SIZE, HealthTag } from './format.js';
+import { GICS_MAGIC_V2, V12_FLAGS, StreamId, InnerCodecId, OuterCodecId, GICS_VERSION_BYTE, HealthTag } from './format.js';
 import { ContextV0, ContextSnapshot } from './context.js';
 import { calculateBlockMetrics, classifyRegime } from './metrics.js';
 import { Codecs } from './codecs.js';
 import { HealthMonitor, RoutingDecision } from './chm.js';
 import type { GICSv2EncoderOptions } from './types.js';
+import { StreamSection, BlockManifestEntry } from './stream-section.js';
+import { getOuterCodec } from './outer-codecs.js';
+import { IntegrityChain } from './integrity.js';
 
 const BLOCK_SIZE = 1000;
 
@@ -20,6 +23,7 @@ export class GICSv2Encoder {
     private hasEmittedHeader = false;
     private readonly runId: string;
     private readonly options: Required<GICSv2EncoderOptions>;
+    private readonly integrity: IntegrityChain;
 
     static reset() {
         // Backward-compat for existing tests. No global mutable state is used anymore.
@@ -48,6 +52,8 @@ export class GICSv2Encoder {
 
         this.chmTime = new HealthMonitor(`${this.runId}:TIME`, this.options.probeInterval, this.options.logger);
         this.chmValue = new HealthMonitor(`${this.runId}:VALUE`, this.options.probeInterval, this.options.logger);
+
+        this.integrity = new IntegrityChain();
     }
 
     async addSnapshot(snapshot: Snapshot): Promise<void> {
@@ -69,21 +75,67 @@ export class GICSv2Encoder {
         const features = this.collectDataFeatures();
         this.snapshots = [];
 
-        const blocks: Uint8Array[] = [];
+        const streamBlocks: Map<StreamId, { manifest: BlockManifestEntry[], payloads: Uint8Array[] }> = new Map();
         const blockStats: any[] = [];
 
-        const processBlockWrapper = (streamId: StreamId, chunk: number[], inputData: number[], stateSnapshot: ContextSnapshot, chm: HealthMonitor) => {
-            this.processStreamBlock(streamId, chunk, inputData, stateSnapshot, chm, blocks, blockStats);
+        const addToStream = (streamId: StreamId, manifest: BlockManifestEntry, payload: Uint8Array) => {
+            if (!streamBlocks.has(streamId)) {
+                streamBlocks.set(streamId, { manifest: [], payloads: [] });
+            }
+            const entry = streamBlocks.get(streamId)!;
+            entry.manifest.push(manifest);
+            entry.payloads.push(payload);
         };
 
-        this.processTimeBlocks(features.timestamps, processBlockWrapper);
-        this.processSnapshotLenBlocks(features.snapshotLengths, blocks, blockStats);
-        this.processItemIdBlocks(features.itemIds, blocks, blockStats);
-        this.processValueBlocks(features.prices, processBlockWrapper);
-        this.processQuantityBlocks(features.quantities, blocks, blockStats);
+        const processBlockWrapper = (streamId: StreamId, chunk: number[], inputData: number[], stateSnapshot: ContextSnapshot, chm: HealthMonitor) => {
+            const result = this.processStreamBlock(streamId, chunk, inputData, stateSnapshot, chm);
+            addToStream(streamId, result.manifest, result.payload);
+            blockStats.push(result.stats);
+        };
 
-        return this.assembleOutput(blocks, blockStats);
+        // 1. Core Processing: Generate inner payloads
+        this.processTimeBlocks(features.timestamps, processBlockWrapper);
+        this.processSnapshotLenBlocks(features.snapshotLengths, addToStream, blockStats);
+        this.processItemIdBlocks(features.itemIds, addToStream, blockStats);
+        this.processValueBlocks(features.prices, processBlockWrapper);
+        this.processQuantityBlocks(features.quantities, addToStream, blockStats);
+
+        // 2. Section Wrapping: Map streams to Sections (Outer Compression + Integrity Chain)
+        const sections: Uint8Array[] = [];
+        const order = [StreamId.TIME, StreamId.SNAPSHOT_LEN, StreamId.ITEM_ID, StreamId.VALUE, StreamId.QUANTITY];
+        const outerCodec = getOuterCodec(OuterCodecId.ZSTD);
+
+        for (const streamId of order) {
+            const data = streamBlocks.get(streamId);
+            if (!data) continue;
+
+            const concatenated = this.concatArrays(data.payloads);
+            const compressed = await outerCodec.compress(concatenated);
+
+            const manifestBytes = StreamSection.serializeManifest(data.manifest);
+            const dataToHash = this.concatArrays([
+                new Uint8Array([streamId]),
+                manifestBytes,
+                compressed
+            ]);
+            const sectionHash = this.integrity.update(dataToHash);
+
+            const section = new StreamSection(
+                streamId,
+                OuterCodecId.ZSTD,
+                data.manifest.length,
+                concatenated.length,
+                compressed.length,
+                sectionHash,
+                data.manifest,
+                compressed
+            );
+            sections.push(section.serialize());
+        }
+
+        return this.assembleOutput(sections, blockStats);
     }
+
 
     private collectDataFeatures() {
         const timestamps: number[] = [];
@@ -114,23 +166,21 @@ export class GICSv2Encoder {
         }
     }
 
-    private processSnapshotLenBlocks(lengths: number[], blocks: Uint8Array[], stats: any[]) {
+    private processSnapshotLenBlocks(lengths: number[], addToStream: Function, stats: any[]) {
         for (let i = 0; i < lengths.length; i += BLOCK_SIZE) {
             const chunk = lengths.slice(i, i + BLOCK_SIZE);
             const encoded = encodeVarint(chunk);
-            const block = this.createBlock(StreamId.SNAPSHOT_LEN, CodecId.VARINT_DELTA, chunk.length, encoded, 0);
-            blocks.push(block);
-            this.recordSimpleBlockStats(StreamId.SNAPSHOT_LEN, chunk, block, encoded, stats);
+            addToStream(StreamId.SNAPSHOT_LEN, { innerCodecId: InnerCodecId.VARINT_DELTA, nItems: chunk.length, payloadLen: encoded.length, flags: 0 }, encoded);
+            this.recordSimpleBlockStats(StreamId.SNAPSHOT_LEN, chunk, encoded, stats);
         }
     }
 
-    private processItemIdBlocks(itemIds: number[], blocks: Uint8Array[], stats: any[]) {
+    private processItemIdBlocks(itemIds: number[], addToStream: Function, stats: any[]) {
         for (let i = 0; i < itemIds.length; i += BLOCK_SIZE) {
             const chunk = itemIds.slice(i, i + BLOCK_SIZE);
             const encoded = encodeVarint(chunk);
-            const block = this.createBlock(StreamId.ITEM_ID, CodecId.VARINT_DELTA, chunk.length, encoded, 0);
-            blocks.push(block);
-            this.recordSimpleBlockStats(StreamId.ITEM_ID, chunk, block, encoded, stats);
+            addToStream(StreamId.ITEM_ID, { innerCodecId: InnerCodecId.VARINT_DELTA, nItems: chunk.length, payloadLen: encoded.length, flags: 0 }, encoded);
+            this.recordSimpleBlockStats(StreamId.ITEM_ID, chunk, encoded, stats);
         }
     }
 
@@ -143,29 +193,28 @@ export class GICSv2Encoder {
         }
     }
 
-    private processQuantityBlocks(quantities: number[], blocks: Uint8Array[], stats: any[]) {
+    private processQuantityBlocks(quantities: number[], addToStream: Function, stats: any[]) {
         for (let i = 0; i < quantities.length; i += BLOCK_SIZE) {
             const chunk = quantities.slice(i, i + BLOCK_SIZE);
             const encoded = encodeVarint(chunk);
-            const block = this.createBlock(StreamId.QUANTITY, CodecId.VARINT_DELTA, chunk.length, encoded, 0);
-            blocks.push(block);
-            this.recordSimpleBlockStats(StreamId.QUANTITY, chunk, block, encoded, stats);
+            addToStream(StreamId.QUANTITY, { innerCodecId: InnerCodecId.VARINT_DELTA, nItems: chunk.length, payloadLen: encoded.length, flags: 0 }, encoded);
+            this.recordSimpleBlockStats(StreamId.QUANTITY, chunk, encoded, stats);
         }
     }
 
-    private recordSimpleBlockStats(streamId: StreamId, chunk: number[], block: Uint8Array, encoded: Uint8Array, stats: any[]) {
+    private recordSimpleBlockStats(streamId: StreamId, chunk: number[], encoded: Uint8Array, stats: any[]) {
         const metrics = calculateBlockMetrics(chunk);
         stats.push({
             stream_id: streamId,
-            codec: CodecId.VARINT_DELTA,
-            bytes: block.length,
+            codec: InnerCodecId.VARINT_DELTA,
+            bytes: encoded.length,
             raw_bytes: chunk.length * 8,
-            header_bytes: BLOCK_HEADER_SIZE,
+            header_bytes: 0,
             payload_bytes: encoded.length,
             params: { decision: 'CORE', reason: null },
             flags: 0,
             health: HealthTag.OK,
-            ratio: (chunk.length * 8) / block.length,
+            ratio: (chunk.length * 8) / (encoded.length || 1),
             trainBaseline: true,
             metrics: metrics,
             regime: classifyRegime(metrics)
@@ -177,55 +226,54 @@ export class GICSv2Encoder {
         chunk: number[],
         inputData: number[],
         stateSnapshot: ContextSnapshot,
-        chm: HealthMonitor,
-        blocks: Uint8Array[],
-        blockStats: any[]
+        chm: HealthMonitor
     ) {
         const metrics = calculateBlockMetrics(chunk);
         const rawInBytes = chunk.length * 8;
         const currentBlockIndex = chm.getTotalBlocks() + 1;
 
         const { candidateEncoded, candidateCodec } = this.selectBestCodec(streamId, inputData, metrics, stateSnapshot);
-        const coreLen = candidateEncoded.length + BLOCK_HEADER_SIZE;
-        const candidateRatio = rawInBytes / (coreLen || 1);
+        const candidateRatio = rawInBytes / (candidateEncoded.length || 1);
 
         const route = chm.decideRoute(metrics, candidateRatio, currentBlockIndex);
 
         let finalEncoded: Uint8Array;
-        let finalCodec: CodecId;
+        let finalCodec: InnerCodecId;
 
         if (route.decision === RoutingDecision.QUARANTINE) {
             this.context.restore(stateSnapshot);
             finalEncoded = encodeVarint(inputData);
-            finalCodec = (streamId === StreamId.TIME) ? CodecId.DOD_VARINT : CodecId.VARINT_DELTA;
+            finalCodec = (streamId === StreamId.TIME) ? InnerCodecId.DOD_VARINT : InnerCodecId.VARINT_DELTA;
         } else {
             finalEncoded = candidateEncoded;
             finalCodec = candidateCodec;
         }
 
-        const chmResult = chm.update(route.decision, metrics, rawInBytes, finalEncoded.length, BLOCK_HEADER_SIZE, currentBlockIndex, finalCodec);
-        const block = this.createBlock(streamId, finalCodec, chunk.length, finalEncoded, chmResult.flags);
-        blocks.push(block);
+        const chmResult = chm.update(route.decision, metrics, rawInBytes, finalEncoded.length, 0, currentBlockIndex, finalCodec);
 
-        blockStats.push({
-            stream_id: streamId,
-            codec: finalCodec,
-            bytes: block.length,
-            raw_bytes: rawInBytes,
-            header_bytes: BLOCK_HEADER_SIZE,
-            payload_bytes: finalEncoded.length,
-            params: { decision: route.decision, reason: route.reason },
-            flags: chmResult.flags,
-            health: chmResult.healthTag,
-            ratio: rawInBytes / block.length,
-            trainBaseline: (route.decision === RoutingDecision.CORE),
-            metrics: metrics,
-            regime: classifyRegime(metrics)
-        });
+        return {
+            manifest: { innerCodecId: finalCodec, nItems: chunk.length, payloadLen: finalEncoded.length, flags: chmResult.flags },
+            payload: finalEncoded,
+            stats: {
+                stream_id: streamId,
+                codec: finalCodec,
+                bytes: finalEncoded.length,
+                raw_bytes: rawInBytes,
+                header_bytes: 0,
+                payload_bytes: finalEncoded.length,
+                params: { decision: route.decision, reason: route.reason },
+                flags: chmResult.flags,
+                health: chmResult.healthTag,
+                ratio: rawInBytes / (finalEncoded.length || 1),
+                trainBaseline: (route.decision === RoutingDecision.CORE),
+                metrics: metrics,
+                regime: classifyRegime(metrics)
+            }
+        };
     }
 
-    private assembleOutput(blocks: Uint8Array[], blockStats: any[]): Uint8Array {
-        const totalPayloadSize = blocks.reduce((acc, b) => acc + b.length, 0);
+    private assembleOutput(sections: Uint8Array[], blockStats: any[]): Uint8Array {
+        const sectionsData = this.concatArrays(sections);
         let headerSize = 0;
         let headerBytes: Uint8Array | null = null;
 
@@ -238,17 +286,15 @@ export class GICSv2Encoder {
             this.hasEmittedHeader = true;
         }
 
-        const result = new Uint8Array((headerBytes ? headerSize : 0) + totalPayloadSize + 1);
+        const result = new Uint8Array((headerBytes ? headerSize : 0) + sectionsData.length + 1);
         let pos = 0;
         if (headerBytes) {
             result.set(headerBytes, pos);
             pos += headerSize;
         }
-        for (const b of blocks) {
-            result.set(b, pos);
-            pos += b.length;
-        }
-        result[pos] = 0xFF;
+        result.set(sectionsData, pos);
+        pos += sectionsData.length;
+        result[pos] = 0xFF; // EOS
 
         this.computeTelemetry(blockStats);
         return result;
@@ -283,9 +329,6 @@ export class GICSv2Encoder {
         };
     }
 
-    /**
-     * FINALIZE: Seal the stream, optionally write Manifest/Sidecar.
-     */
     async finalize(): Promise<void> {
         if (this.isFinalized) throw new Error("GICSv2Encoder: Finalize called twice!");
 
@@ -307,24 +350,8 @@ export class GICSv2Encoder {
         }
     }
 
-    // Compatibility for Benchmark Harness
     async finish(): Promise<Uint8Array> {
-        const result = await this.flush();
-        return result;
-    }
-
-    private createBlock(streamId: StreamId, codecId: CodecId, nItems: number, payload: Uint8Array, flags: number): Uint8Array {
-        const block = new Uint8Array(BLOCK_HEADER_SIZE + payload.length);
-        const view = new DataView(block.buffer);
-
-        view.setUint8(0, streamId);
-        view.setUint8(1, codecId);
-        view.setUint32(2, nItems, true);
-        view.setUint32(6, payload.length, true);
-        view.setUint8(10, flags);
-
-        block.set(payload, BLOCK_HEADER_SIZE);
-        return block;
+        return this.flush();
     }
 
     private computeTimeDeltas(timestamps: number[], commitState: boolean): number[] {
@@ -366,24 +393,24 @@ export class GICSv2Encoder {
         return deltas.map(Math.round);
     }
 
-    private selectBestCodec(streamId: StreamId, inputData: number[], metrics: any, stateSnapshot: ContextSnapshot): { candidateEncoded: Uint8Array, candidateCodec: CodecId } {
+    private selectBestCodec(streamId: StreamId, inputData: number[], metrics: any, stateSnapshot: ContextSnapshot): { candidateEncoded: Uint8Array, candidateCodec: InnerCodecId } {
         let candidateEncoded: Uint8Array;
-        let candidateCodec: CodecId;
+        let candidateCodec: InnerCodecId;
 
         if (this.context.id && streamId === StreamId.VALUE && metrics.unique_ratio < 0.5) {
-            candidateCodec = CodecId.DICT_VARINT;
+            candidateCodec = InnerCodecId.DICT_VARINT;
             candidateEncoded = Codecs.encodeDict(inputData, this.context);
         } else if (metrics.dod_zero_ratio > 0.9) {
-            candidateCodec = CodecId.RLE_DOD;
+            candidateCodec = InnerCodecId.RLE_DOD;
             candidateEncoded = Codecs.encodeRLE(this.prepareDODStream(streamId, inputData, stateSnapshot));
         } else if (metrics.p90_abs_delta < 127) {
-            candidateCodec = CodecId.BITPACK_DELTA;
+            candidateCodec = InnerCodecId.BITPACK_DELTA;
             candidateEncoded = Codecs.encodeBitPack(inputData);
         } else if (streamId === StreamId.TIME) {
-            candidateCodec = CodecId.DOD_VARINT;
+            candidateCodec = InnerCodecId.DOD_VARINT;
             candidateEncoded = encodeVarint(inputData);
         } else {
-            candidateCodec = CodecId.VARINT_DELTA;
+            candidateCodec = InnerCodecId.VARINT_DELTA;
             candidateEncoded = encodeVarint(inputData);
         }
 
@@ -400,5 +427,16 @@ export class GICSv2Encoder {
             pd = d;
         }
         return dodStream;
+    }
+
+    private concatArrays(arrays: Uint8Array[]): Uint8Array {
+        const totalLength = arrays.reduce((sum, arr) => sum + arr.length, 0);
+        const result = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const arr of arrays) {
+            result.set(arr, offset);
+            offset += arr.length;
+        }
+        return result;
     }
 }

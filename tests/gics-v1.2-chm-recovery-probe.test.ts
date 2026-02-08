@@ -1,6 +1,7 @@
 import assert from 'node:assert';
 import { GICSv2Encoder } from '../src/gics/encode.js';
 import { BLOCK_FLAGS } from '../src/gics/format.js';
+import { StreamSection } from '../src/gics/stream-section.js';
 
 // Mocks
 // We need to subclass or mock GICSv2Encoder to force behavior?
@@ -140,28 +141,20 @@ describe('GICS v1.2 CHM Recovery Probe', () => {
 
         // We need to handle `finalData` might be empty if loop failed? No.
 
-        let pos = 0; // In finalData, it starts at 0 (no file header if header already emitted in previous flush? 
-        // `hasEmittedHeader` in Encode.ts prevents re-emit.
-        // So `finalData` has NO file header.
+        let pos = 0; // In finalData, it starts at 0 (no file header)
+        while (pos < finalData.length - 1) { // Skip EOS
+            const section = StreamSection.deserialize(finalData, pos);
+            pos += section.totalSize;
 
-        while (pos < finalData.length) {
-            const streamId = finalData[pos];
-            if (streamId === undefined || streamId === 0xFF) break; // EOS marker
-
-            const payloadLen = new DataView(finalData.buffer, finalData.byteOffset + pos + 6, 4).getUint32(0, true);
-            const flags = finalData[pos + 10];
-            const BLOCK_HEADER_SIZE = 11;
-
-
-
-            // Only evaluate recovery timing on VALUE stream blocks.
-            if (streamId === 20) {
-                valueBlockCount++;
-                if ((flags & BLOCK_FLAGS.ANOMALY_END) !== 0) {
-                    blockIndicesWithEnd.push(valueBlockCount);
+            if (section.streamId === 20) { // Value Stream (StreamId.VALUE = 20)
+                for (let i = 0; i < section.manifest.length; i++) {
+                    valueBlockCount++;
+                    const flags = section.manifest[i].flags;
+                    if ((flags & BLOCK_FLAGS.ANOMALY_END) !== 0) {
+                        blockIndicesWithEnd.push(valueBlockCount);
+                    }
                 }
             }
-            pos += BLOCK_HEADER_SIZE + payloadLen;
         }
 
         // We expect exactly one ANOMALY_END.

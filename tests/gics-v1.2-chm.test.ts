@@ -3,6 +3,7 @@ import assert from 'node:assert';
 
 import { GICSv2Encoder } from '../src/gics/encode.js';
 import { BLOCK_FLAGS } from '../src/gics/format.js';
+import { StreamSection } from '../src/gics/stream-section.js';
 
 // Helper to generate a stream that shifts regime
 function generateRegimeShiftData(blocksStable: number, blocksChaos: number, blocksRecovery: number) {
@@ -51,29 +52,26 @@ describe('GICS v1.2 CHM Regime Shift Verification', () => {
         const data = await enc.flush();
         await enc.finalize();
 
-        let pos = 9; // Skip file header
-        let blockIndex = 0;
+        let pos = 9; // Skip file header (Magic=4, Ver=1, Flags=4)
         let foundStart = -1;
         let foundEnd = -1;
 
-        while (pos < data.length) {
-            const streamId = data[pos];
-            if (streamId === undefined || streamId === 0xFF) break; // EOS marker
+        while (pos < data.length - 1) { // Skip EOS marker
+            const section = StreamSection.deserialize(data, pos);
+            pos += section.totalSize;
 
-            const payloadLen = new DataView(data.buffer, data.byteOffset + pos + 6, 4).getUint32(0, true);
-            const flags = data[pos + 10];
-            const BLOCK_HEADER_SIZE = 11;
+            if (section.streamId === 10) { // Time Stream
+                for (let i = 0; i < section.manifest.length; i++) {
+                    const blockIndex = i + 1;
+                    const flags = section.manifest[i].flags;
 
-            if (streamId === 10) { // Time Stream
-                blockIndex++;
+                    const isStart = (flags & BLOCK_FLAGS.ANOMALY_START) !== 0;
+                    const isEnd = (flags & BLOCK_FLAGS.ANOMALY_END) !== 0;
 
-                const isStart = (flags & BLOCK_FLAGS.ANOMALY_START) !== 0;
-                const isEnd = (flags & BLOCK_FLAGS.ANOMALY_END) !== 0;
-
-                if (isStart) foundStart = blockIndex;
-                if (isEnd) foundEnd = blockIndex;
+                    if (isStart) foundStart = blockIndex;
+                    if (isEnd) foundEnd = blockIndex;
+                }
             }
-            pos += BLOCK_HEADER_SIZE + payloadLen;
         }
 
         // Assertions

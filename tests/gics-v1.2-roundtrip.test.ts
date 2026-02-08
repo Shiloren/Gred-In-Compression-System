@@ -26,7 +26,7 @@ describe('GICS v1.2 Roundtrip', () => {
         // Basic format check
         const magic = new TextDecoder().decode(encoded.slice(0, 4));
         expect(magic).toBe('GICS');
-        expect(encoded[4]).toBe(0x02);
+        expect(encoded[4]).toBe(0x03);
 
         const decoded = await gics_decode(encoded);
 

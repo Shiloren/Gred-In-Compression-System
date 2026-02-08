@@ -22,3 +22,14 @@ export type GICSv2EncoderOptions = {
     /** Optional logger hook to surface CHM / debug messages without console.* in src/. */
     logger?: GICSv2Logger | null;
 };
+
+export type GICSv2DecoderOptions = {
+    /** 
+     * Integrity verification mode for v1.3 hash chain.
+     * - 'strict' (default): Throw IntegrityError on hash mismatch (fail-closed)
+     * - 'warn': Log warning but continue decoding (fail-open, use with caution)
+     */
+    integrityMode?: 'strict' | 'warn';
+    /** Optional logger for warnings in 'warn' mode */
+    logger?: GICSv2Logger | null;
+};

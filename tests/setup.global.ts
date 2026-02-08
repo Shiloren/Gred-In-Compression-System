@@ -16,7 +16,7 @@ process.on('uncaughtException', (err: Error) => {
 const blockMsg = 'â›” NETWORK BLOCKED: Unit tests must not access external resources. Use vi.spyOn() or mocks.';
 
 // Mock http/https modules
-vi.mock('http', async (importOriginal) => {
+vi.mock('http', async (importOriginal: () => Promise<unknown>) => {
   const actual = await (importOriginal as () => Promise<typeof import('http')>)();
   return {
     ...actual,
@@ -25,7 +25,7 @@ vi.mock('http', async (importOriginal) => {
   };
 });
 
-vi.mock('https', async (importOriginal) => {
+vi.mock('https', async (importOriginal: () => Promise<unknown>) => {
   const actual = await (importOriginal as () => Promise<typeof import('https')>)();
   return {
     ...actual,
