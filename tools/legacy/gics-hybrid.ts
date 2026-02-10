@@ -992,7 +992,7 @@ export class HybridReader {
         const dataOffset = this.view.getUint32(offset, true); offset += 8;
 
         // Check extensions for encryption
-        if (temporalIndexOffset > offset) {
+        if (temporalIndexOffset > offset) { // If temporalIndexOffset is greater than current offset, it means there's an extension header
             this.encryptionMode = this.buffer[offset++];
             // Skip salt/auth if present for now, handled in unlock if needed
         }
@@ -1019,11 +1019,11 @@ export class HybridReader {
         while (i < values.length) {
             const itemId = values[i++];
             const tierVal = values[i++];
-            let baseTier: ItemTier;
-            if (tierVal === 0) baseTier = 'hot';
-            else if (tierVal === 1) baseTier = 'warm';
-            else baseTier = 'cold';
-            const actualTier = tierVal === 3 ? 'ultra_sparse' : baseTier;
+            let actualTier: ItemTier;
+            if (tierVal === 0) actualTier = 'hot';
+            else if (tierVal === 1) actualTier = 'warm';
+            else if (tierVal === 2) actualTier = 'cold';
+            else actualTier = 'ultra_sparse';
 
             const count = values[i++];
             const blockPositions = new Map<number, number>();
@@ -1083,19 +1083,12 @@ export class HybridReader {
         };
     }
 
-    async queryItems(filter: QueryFilter): Promise<ItemQueryResult[]> {
-        const itemIds = filter.itemIds ?? Array.from(this.itemIndex.keys());
+    async queryItems(query: QueryFilter): Promise<ItemQueryResult[]> {
+        const itemIds = query.itemIds ?? Array.from(this.itemIndex.keys());
+        if (itemIds.length === 0) return [];
+
+        const relevantBlocks = this.findRelevantBlocks(query);
         const results = new Map<number, ItemQueryResult>();
-
-        for (const id of itemIds) {
-            results.set(id, { itemId: id, history: [] });
-        }
-
-        const relevantBlocks = this.temporalIndex.filter(b => {
-            if (filter.startTime && b.startTimestamp < filter.startTime) return true;
-            if (filter.endTime && b.startTimestamp > filter.endTime) return false;
-            return true;
-        });
 
         const dataStart = this.view.getUint32(28, true);
 
@@ -1104,6 +1097,22 @@ export class HybridReader {
         }
 
         return Array.from(results.values());
+    }
+
+    private findRelevantBlocks(query: QueryFilter): TemporalIndexEntry[] {
+        return this.temporalIndex.filter(entry => {
+            const inRange = (!query.startTime || entry.startTimestamp >= query.startTime) &&
+                (!query.endTime || entry.startTimestamp <= query.endTime);
+            if (!inRange) return false;
+
+            if (query.itemIds) {
+                // If specific IDs requested, check if at least one is in this block
+                // Approximation: if block exists, we check it. 
+                // In a real system we might have a bloom filter per block.
+                return true;
+            }
+            return true;
+        });
     }
 
     private async processBlock(
