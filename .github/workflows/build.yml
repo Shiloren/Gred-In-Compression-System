@@ -48,6 +48,7 @@ jobs:
       # This lets us review the findings without manually opening SonarCloud.
       - name: SonarCloud Summary (Quality Gate + top issues)
         if: always()
+        continue-on-error: true
         env:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           SONAR_HOST_URL: https://sonarcloud.io
@@ -56,13 +57,28 @@ jobs:
         run: |
           set +x
           echo "== Quality Gate (project=${SONAR_PROJECT_KEY}, branch=${SONAR_BRANCH}) =="
-          curl -s -u "${SONAR_TOKEN}:" \
-            "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}&branch=${SONAR_BRANCH}" \
-            | python - <<'PY'
+          QG_URL="${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}&branch=${SONAR_BRANCH}"
+          QG_RESP=$(curl -sS -u "${SONAR_TOKEN}:" -w "\nHTTP:%{http_code}\n" "$QG_URL" || true)
+          echo "$QG_RESP" | python - <<'PY'
           import json, sys
-          data=json.load(sys.stdin)
+          raw = sys.stdin.read()
+          # Separate body and HTTP code footer
+          body, _, footer = raw.rpartition("\nHTTP:")
+          http = footer.strip() if footer else "unknown"
+          body = body.strip()
+          print("http:", http)
+          if not body:
+              print("empty response")
+              raise SystemExit(0)
+          if not (body.startswith('{') or body.startswith('[')):
+              print("non-json response (first 200 chars):")
+              print(body[:200])
+              raise SystemExit(0)
+          data = json.loads(body)
+          if 'errors' in data:
+              print('errors:', data['errors'])
+              raise SystemExit(0)
           ps=data.get('projectStatus', {})
-          # Print compact summary
           print('status:', ps.get('status'))
           for c in ps.get('conditions', [])[:20]:
               metric=c.get('metricKey')
@@ -74,11 +90,26 @@ jobs:
 
           echo ""
           echo "== Top issues (first 50) =="
-          curl -s -u "${SONAR_TOKEN}:" \
-            "${SONAR_HOST_URL}/api/issues/search?componentKeys=${SONAR_PROJECT_KEY}&branch=${SONAR_BRANCH}&resolved=false&ps=50" \
-            | python - <<'PY'
+          ISS_URL="${SONAR_HOST_URL}/api/issues/search?componentKeys=${SONAR_PROJECT_KEY}&branch=${SONAR_BRANCH}&resolved=false&ps=50"
+          ISS_RESP=$(curl -sS -u "${SONAR_TOKEN}:" -w "\nHTTP:%{http_code}\n" "$ISS_URL" || true)
+          echo "$ISS_RESP" | python - <<'PY'
           import json, sys
-          data=json.load(sys.stdin)
+          raw = sys.stdin.read()
+          body, _, footer = raw.rpartition("\nHTTP:")
+          http = footer.strip() if footer else "unknown"
+          body = body.strip()
+          print("http:", http)
+          if not body:
+              print("empty response")
+              raise SystemExit(0)
+          if not (body.startswith('{') or body.startswith('[')):
+              print("non-json response (first 200 chars):")
+              print(body[:200])
+              raise SystemExit(0)
+          data = json.loads(body)
+          if 'errors' in data:
+              print('errors:', data['errors'])
+              raise SystemExit(0)
           issues=data.get('issues', [])
           print('count:', len(issues))
           for i, it in enumerate(issues, 1):
