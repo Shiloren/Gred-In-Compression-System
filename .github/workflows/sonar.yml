@@ -28,8 +28,17 @@ jobs:
           node-version: 20
           cache: npm
 
+      - name: Show tool versions
+        run: |
+          node --version
+          npm --version
+
       - name: Install dependencies
-        run: npm ci
+        # GitHub runners use npm v10+ which is stricter with peer deps.
+        # This repo currently has an ESLint peer dependency constraint mismatch
+        # (@eslint/js@10 wants eslint@^10, while eslint is pinned to v9).
+        # --legacy-peer-deps makes CI reproducible across npm versions.
+        run: npm ci --legacy-peer-deps
 
       # Optional. This repo does not currently pin a Vitest coverage provider dependency,
       # so coverage may fail depending on your setup. Keep it non-blocking.
