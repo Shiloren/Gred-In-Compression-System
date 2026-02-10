@@ -43,3 +43,50 @@ jobs:
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
           # Required for SonarCloud.
           SONAR_HOST_URL: https://sonarcloud.io
+
+      # Optional convenience: print Quality Gate + a short list of issues into the GH Actions logs.
+      # This lets us review the findings without manually opening SonarCloud.
+      - name: SonarCloud Summary (Quality Gate + top issues)
+        if: always()
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          SONAR_HOST_URL: https://sonarcloud.io
+          SONAR_PROJECT_KEY: Shiloren_Gred-In-Compression-System
+          SONAR_BRANCH: ${{ github.ref_name }}
+        run: |
+          set +x
+          echo "== Quality Gate (project=${SONAR_PROJECT_KEY}, branch=${SONAR_BRANCH}) =="
+          curl -s -u "${SONAR_TOKEN}:" \
+            "${SONAR_HOST_URL}/api/qualitygates/project_status?projectKey=${SONAR_PROJECT_KEY}&branch=${SONAR_BRANCH}" \
+            | python - <<'PY'
+          import json, sys
+          data=json.load(sys.stdin)
+          ps=data.get('projectStatus', {})
+          # Print compact summary
+          print('status:', ps.get('status'))
+          for c in ps.get('conditions', [])[:20]:
+              metric=c.get('metricKey')
+              status=c.get('status')
+              actual=c.get('actualValue')
+              err=c.get('errorThreshold')
+              print(f"- {metric}: {status} (actual={actual} threshold={err})")
+          PY
+
+          echo ""
+          echo "== Top issues (first 50) =="
+          curl -s -u "${SONAR_TOKEN}:" \
+            "${SONAR_HOST_URL}/api/issues/search?componentKeys=${SONAR_PROJECT_KEY}&branch=${SONAR_BRANCH}&resolved=false&ps=50" \
+            | python - <<'PY'
+          import json, sys
+          data=json.load(sys.stdin)
+          issues=data.get('issues', [])
+          print('count:', len(issues))
+          for i, it in enumerate(issues, 1):
+              rule=it.get('rule')
+              sev=it.get('severity')
+              typ=it.get('type')
+              msg=it.get('message')
+              comp=it.get('component')
+              line=it.get('line')
+              print(f"{i:02d}. [{sev}][{typ}] {comp}:{line} - {msg} ({rule})")
+          PY
