@@ -198,6 +198,25 @@ npm run verify
 
 ---
 
+## SonarCloud (automatic analysis)
+
+This repository contains a GitHub Actions workflow at:
+
+- `.github/workflows/sonar.yml`
+
+To enable automatic scans on push / PR:
+
+1) In GitHub, go to **Settings → Secrets and variables → Actions**
+2) Add a repository secret:
+   - `SONAR_TOKEN` (from SonarCloud: **My Account → Security → Generate Tokens**)
+3) Ensure your SonarCloud project key matches `sonar-project.properties`:
+   - `sonar.projectKey=Shiloren_Gred-In-Compression-System`
+   - and set the correct `sonar.organization` value for your SonarCloud org.
+
+After that, you should see the workflow running in **GitHub → Actions**.
+
+---
+
 ## 📚 Documentation
 
 - **[Implementation Report](./docs/reports/GICS_v1.3_IMPLEMENTATION_REPORT.md)**: Current architecture and implementation details
