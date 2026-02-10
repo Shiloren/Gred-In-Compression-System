@@ -1,84 +1,93 @@
 # Repository Layout
 
-> Project structure overview for the GICS core repository.
+> Project structure overview for the GICS core repository (v1.3).
 
 ---
 
-## 📁 Directory Structure
+## Directory Structure
 
 ```
 /
 ├── src/                    # Production source code
-│   ├── gics/               # Core v1.3 engine (encode, decode, formatting)
-│   ├── gics-types.ts       # Global type definitions
-│   ├── gics-utils.ts       # Low-level bit/byte utilities
-│   └── index.ts            # Public API exports
+│   ├── gics/               # Core v1.3 engine
+│   │   ├── encode.ts       # Encoder (legacy + schema paths)
+│   │   ├── decode.ts       # Decoder (legacy + schema + query)
+│   │   ├── format.ts       # Binary format constants and enums
+│   │   ├── codecs.ts       # Inner codecs (BitPack, RLE, Dict, Fixed64)
+│   │   ├── context.ts      # Coding context (dictionary, state snapshot/restore)
+│   │   ├── chm.ts          # Compression Health Monitor (anomaly detection)
+│   │   ├── metrics.ts      # Block metrics calculation + regime classification
+│   │   ├── segment.ts      # Segment, SegmentIndex, BloomFilter, SegmentBuilder
+│   │   ├── stream-section.ts # StreamSection serialization
+│   │   ├── string-dict.ts  # String dictionary for schema string IDs
+│   │   ├── integrity.ts    # SHA-256 hash chain + CRC32
+│   │   ├── encryption.ts   # AES-256-GCM encryption/decryption
+│   │   ├── outer-codecs.ts # Zstd compression wrapper
+│   │   ├── field-math.ts   # Delta/DOD computation for time and value streams
+│   │   ├── file-access.ts  # File append utilities
+│   │   ├── errors.ts       # Error hierarchy (IntegrityError, etc.)
+│   │   ├── types.ts        # Encoder/Decoder option types
+│   │   └── telemetry-types.ts # BlockStats type
+│   ├── gics-types.ts       # Global type definitions (Snapshot, SchemaProfile, etc.)
+│   ├── gics-utils.ts       # Low-level varint/RLE utilities
+│   ├── zstd-codec.d.ts     # Type declaration for zstd-codec
+│   └── index.ts            # Public API (GICS namespace + exports)
 │
-├── tests/                  # Vitest test suites
-│   ├── gics-*.test.ts      # Unit/Integration tests for v1.3
-│   └── fixtures/           # Binaries and snapshots for verification
+├── tests/                  # Vitest test suites (101 tests)
+│   ├── gics-*.test.ts      # Unit/Integration tests
+│   ├── regression/         # Regression tests (EOS, integrity, truncation)
+│   ├── fixtures/golden/    # Golden corpus (.gics + .expected.json)
+│   └── helpers/            # Test utilities
 │
 ├── bench/                  # Performance benchmarks
+│   ├── scripts/            # Harness, datasets, report generation
+│   ├── forensics/          # Determinism verification pipeline
+│   └── results/            # Benchmark run artifacts
 │
-├── tools/                  # Development ops and verification
-│   ├── gimo_server/        # GICS Monitoring Server (GIMO)
-│   └── verify/             # Standalone state verification
+├── tools/                  # Development utilities
+│   ├── golden/             # Golden corpus generator
+│   └── verify/             # Standalone integrity verifier
 │
 ├── docs/                   # Documentation
-│   ├── deprecated/         # Obsolete documentation (with banners)
-│   ├── reports/            # Implementation status and audits
-│   ├── FORMAT.md           # Binary format spec (v1.3)
-│   ├── SECURITY_MODEL.md   # Security and integrity model
-│   └── REPO_LAYOUT.md      # This file
+│   ├── API.md              # Public API reference + integration guide
+│   ├── FORMAT.md           # Binary wire format specification
+│   ├── SECURITY_MODEL.md   # Encryption, integrity, threat model
+│   ├── VERSIONING.md       # Version history and archive pointers
+│   ├── REPO_LAYOUT.md      # This file
+│   ├── ARCHIVE_POINTERS.md # Checksums for archived versions
+│   ├── AGENT_PROTOCOL_V1_3.md # Agent integration protocol
+│   └── reports/            # Implementation status reports
 │
-├── README.md               # Quick start and project status
+├── .github/workflows/      # CI: build, sonar, freeze gate
 ├── package.json            # npm config + scripts
 ├── tsconfig.json           # TypeScript config
-└── vitest.config.ts        # Test runner config
+├── vitest.config.ts        # Test runner config
+├── eslint.config.js        # ESLint + SonarJS config
+└── sonar-project.properties # SonarCloud config
 ```
 
 ---
 
-## 🎯 Key Directories
-
-| Directory | Purpose |
-|-----------|---------|
-| `src/gics/` | Implementation of Segment architecture, Codecs, and Encryption |
-| `tests/` | Comprehensive test suite (Roundtrip, Compression, Security) |
-| `tools/` | Internal dev tools and monitoring infrastructure |
-| `docs/` | Technical specifications and record of truth |
-
----
-
-## 📦 Related Repositories
-
-| Repository | Purpose |
-|------------|---------|
-| **GICS-ARCHIVE** | Historical versions (v1.1, v1.2) — append-only museum |
-
-See [ARCHIVE_POINTERS.md](./ARCHIVE_POINTERS.md) for checksums of archived versions.
-
----
-
-## 🚫 Excluded Content
-
-- **Legacy modules** (`src/gics/v1_2/`) → Flattened/Refactored into `src/gics/`
-- **Dist folders** (`dist/`, `build/`) → Ignored by git
-- **Stray artifacts** (`tmp/`, `.gemini/`) → Internal agent state only
-
----
-
-## 🔧 NPM Scripts
+## NPM Scripts
 
 | Script | Command | Purpose |
 |--------|---------|---------|
-| `build` | `tsc` | Compile TypeScript |
-| `test` | `vitest run` | Run automated test suite |
-| `bench` | `tsx bench/scripts/harness.ts && tsx bench/scripts/gen-report.ts` | Execute performance suite |
-| `bench:forensics` | `tsx bench/forensics/postfreeze/harness.postfreeze.ts` | Determinism + artifacts harness |
-| `bench:forensics:verify` | `tsx bench/forensics/postfreeze/verifier.postfreeze.ts` | Contract verification for forensics |
-| `verify` | `tsx tools/verify/verify.ts` | Integrity verification without decompression |
+| `build` | `tsc` | Compile TypeScript to `dist/` |
+| `test` | `vitest run` | Run 101 automated tests |
+| `bench` | `tsx bench/scripts/harness.ts && ...` | Performance benchmarks |
+| `bench:forensics` | `tsx bench/forensics/...` | Determinism verification harness |
+| `verify` | `tsx tools/verify/verify.ts` | Standalone integrity check |
+| `lint` | `eslint src/**/*.ts` | ESLint + SonarJS code quality |
+| `sonar` | `sonar-scanner` | SonarCloud analysis |
 
 ---
 
-*Document version: 1.3 | Updated: 2026-02-10*
+## Related Repositories
+
+| Repository | Purpose |
+|------------|---------|
+| **GICS-ARCHIVE** | Historical versions (v1.1, v1.2) + legacy code from v1.3 sanitization |
+
+---
+
+*Document version: 1.3.0 | Updated: 2026-02-11*

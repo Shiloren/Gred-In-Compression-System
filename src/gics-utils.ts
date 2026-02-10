@@ -18,7 +18,7 @@ export function encodeVarint(values: number[]): Uint8Array {
 
     for (const val of values) {
         // Zigzag encode: map signed to unsigned (negative numbers close to 0)
-        let zigzag = val >= 0 ? val * 2 : (Math.abs(val) * 2) - 1;
+        const zigzag = val >= 0 ? val * 2 : (Math.abs(val) * 2) - 1;
 
         // Variable-length encoding
         let n = zigzag;

@@ -8,6 +8,7 @@ declare module 'zstd-codec' {
         decompress(data: Uint8Array): Uint8Array | null;
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-empty-object-type
     export interface ZstdStreaming {
         // Streaming API (not used in GICS)
     }

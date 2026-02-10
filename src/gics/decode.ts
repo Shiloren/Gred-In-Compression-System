@@ -48,6 +48,8 @@ const LEGACY_SCHEMA: SchemaProfile = {
     ],
 };
 
+const ERR_DATA_TOO_SHORT = 'Data too short';
+
 export class GICSv2Decoder {
     private readonly data: Uint8Array;
     private pos: number = 0;
@@ -77,7 +79,7 @@ export class GICSv2Decoder {
 
     async getAllSnapshots(): Promise<Snapshot[]> {
         if (this.data.length < GICS_MAGIC_V2.length) {
-            throw new Error('Data too short');
+            throw new Error(ERR_DATA_TOO_SHORT);
         }
 
         if (!this.verifyMagic()) {
@@ -102,7 +104,7 @@ export class GICSv2Decoder {
      */
     async getAllGenericSnapshots(): Promise<GenericSnapshot<Record<string, number | string>>[]> {
         if (this.data.length < GICS_MAGIC_V2.length) {
-            throw new Error('Data too short');
+            throw new Error(ERR_DATA_TOO_SHORT);
         }
         if (!this.verifyMagic()) {
             throw new IntegrityError("GICS Decoder: Invalid magic bytes.");
@@ -271,7 +273,7 @@ export class GICSv2Decoder {
      * Optimized query: Only decompresses segments that MIGHT contain the itemId.
      */
     async query(itemId: number): Promise<Snapshot[]> {
-        if (this.data.length < GICS_HEADER_SIZE_V3) throw new Error('Data too short');
+        if (this.data.length < GICS_HEADER_SIZE_V3) throw new Error(ERR_DATA_TOO_SHORT);
         this.pos = 0;
         const magicMatch = GICS_MAGIC_V2.every((b, i) => this.data[i] === b);
         if (!magicMatch) throw new IntegrityError("Invalid Magic");
@@ -812,11 +814,11 @@ export class GICSv2Decoder {
     }
 
     private getAllSnapshotsV2(): Snapshot[] {
-        let timeData: number[] = [];
-        let snapshotLengths: number[] = [];
-        let itemIds: number[] = [];
-        let priceData: number[] = [];
-        let quantityData: number[] = [];
+        const timeData: number[] = [];
+        const snapshotLengths: number[] = [];
+        const itemIds: number[] = [];
+        const priceData: number[] = [];
+        const quantityData: number[] = [];
 
         const dataEnd = this.data.length - 1;
 

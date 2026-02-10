@@ -137,6 +137,8 @@ Mandatory 37-byte marker at file end.
 | `1` | VARINT_DELTA | Base delta + Protocol Buffer varints |
 | `2` | BITPACK_DELTA| Delta + dynamic bit packing |
 | `3` | RLE_ZIGZAG | Run-Length Encoding + ZigZag |
+| `4` | RLE_DOD | RLE over Delta-of-Delta stream (Time/Value) |
+| `5` | DOD_VARINT | Delta-of-Delta + Varint encoding (Time/Value) |
 | `6` | DICT_VARINT | Context-aware dictionary + Varint |
 | `7` | FIXED64_LE | Fixed-width 8 bytes per item (Little Endian). Used as QUARANTINE anti-expansion cap |
 

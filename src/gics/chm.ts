@@ -241,7 +241,7 @@ export class HealthMonitor {
         let flags = 0;
         let healthTag: HealthTag;
         let isAnomaly = false;
-        let reasonCode: string | null = null;
+        const reasonCode: string | null = null;
 
         if (decision === RoutingDecision.CORE) {
             this.state = CHMState.NORMAL;
@@ -350,7 +350,7 @@ export class HealthMonitor {
         return {
             schema_version: 1,
             run_id: this.runId,
-            gics_version: '1.2',
+            gics_version: '1.3',
             segments: this.anomalies,
             worst_blocks: this.worstBlocks
         };

@@ -6,7 +6,6 @@ import {
     GICS_EOS_MARKER, SEGMENT_FOOTER_SIZE, GICS_FLAGS_V3, GICS_ENC_HEADER_SIZE_V3,
     SCHEMA_STREAM_BASE
 } from './format.js';
-import type { SchemaProfile } from '../gics-types.js';
 import { ContextV0, ContextSnapshot } from './context.js';
 import { calculateBlockMetrics, classifyRegime, BlockMetrics } from './metrics.js';
 import { Codecs } from './codecs.js';
@@ -100,14 +99,14 @@ export class GICSv2Encoder {
 
     constructor(options: GICSv2EncoderOptions = {}) {
         const defaults: Required<GICSv2EncoderOptions> = {
-            runId: `run_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+            runId: `run_${Date.now()}_${crypto.randomUUID().slice(0, 5)}`,
             contextMode: 'on',
             probeInterval: 4,
             sidecarWriter: null,
             logger: null,
             segmentSizeLimit: 1024 * 1024, // 1MB
             password: '',
-            schema: undefined as any,
+            schema: undefined as unknown as import('../gics-types.js').SchemaProfile,
         };
         this.options = { ...defaults, ...options };
 
@@ -357,7 +356,7 @@ export class GICSv2Encoder {
     private async wrapSingleSection(
         streamId: StreamId,
         data: { manifest: BlockManifestEntry[], payloads: Uint8Array[] },
-        outerCodec: any
+        outerCodec: { compress(data: Uint8Array, level?: number): Promise<Uint8Array> }
     ): Promise<StreamSection> {
         const concatenated = this.concatArrays(data.payloads);
         const compressed = await outerCodec.compress(concatenated);
@@ -465,17 +464,16 @@ export class GICSv2Encoder {
         for (const s of snapshots) {
             timestamps.push(s.timestamp);
             // Sort items by key for determinism
-            const entries = [...s.items.entries()].sort((a, b) => {
-                const ka = String(a[0]), kb = String(b[0]);
-                return ka < kb ? -1 : ka > kb ? 1 : 0;
-            });
+            const entries = [...s.items.entries()].sort((a, b) =>
+                String(a[0]).localeCompare(String(b[0]))
+            );
             snapshotLengths.push(entries.length);
 
             for (const [key, data] of entries) {
                 rawItemKeys.push(key);
                 for (const field of schema.fields) {
                     const arr = fieldArrays.get(field.name)!;
-                    const rawVal = (data as any)[field.name];
+                    const rawVal = (data as Record<string, number | string>)[field.name];
 
                     if (field.type === 'categorical' && field.enumMap) {
                         // Convert string to numeric via enum map
@@ -578,8 +576,10 @@ export class GICSv2Encoder {
                     { id: InnerCodecId.BITPACK_DELTA, encode: (data) => Codecs.encodeBitPack(data) },
                 ];
             default:
-                // Auto-detect: try all candidates
+                // Auto-detect: try all candidates (superset of time + value + structural)
                 return [
+                    { id: InnerCodecId.DOD_VARINT, encode: (data) => encodeVarint(data) },
+                    { id: InnerCodecId.RLE_DOD, encode: (data) => Codecs.encodeRLE(data) },
                     { id: InnerCodecId.VARINT_DELTA, encode: (data) => encodeVarint(data) },
                     { id: InnerCodecId.BITPACK_DELTA, encode: (data) => Codecs.encodeBitPack(data) },
                     { id: InnerCodecId.RLE_ZIGZAG, encode: (data) => Codecs.encodeRLE(data) },

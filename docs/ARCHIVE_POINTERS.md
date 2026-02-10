@@ -37,6 +37,15 @@
   - `distribution/` — Packaged distribution
   - `deploy/` — Full deployment with dependencies
 
+### v1.3-legacy (Development Artifacts)
+- **Path**: `versions/v1.3-legacy/`
+- **Status**: Legacy files from v1.3 development cycle (archived 2026-02-11)
+- **Contents**:
+  - `root/` — Hybrid prototypes, `.clinerules`, agent config
+  - `docs/deprecated/` — Deprecated FORMAT_v1.0.md
+  - `tests/` — v1.2-era test suites and helpers
+  - `services/` — Legacy service wrappers
+
 ---
 
 ## Benchmark Artifacts

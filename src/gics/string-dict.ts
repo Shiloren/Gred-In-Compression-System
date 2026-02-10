@@ -6,7 +6,7 @@
  *
  * Position in binary format: after SegmentHeader, before StreamSections.
  */
-import { encodeVarint, decodeVarint } from '../gics-utils.js';
+import { encodeVarint } from '../gics-utils.js';
 
 export interface StringDictionaryData {
     /** String → numeric index mapping */
@@ -21,7 +21,7 @@ export class StringDictionary {
      * Keys are sorted for deterministic encoding.
      */
     static build(keys: string[]): StringDictionaryData {
-        const unique = Array.from(new Set(keys)).sort();
+        const unique = Array.from(new Set(keys)).sort((a, b) => a.localeCompare(b));
         const map = new Map<string, number>();
         for (let i = 0; i < unique.length; i++) {
             map.set(unique[i], i);

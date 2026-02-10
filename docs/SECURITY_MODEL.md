@@ -65,11 +65,13 @@ GICS v1.3 uses a "Chain of Integrity" to ensure every byte is valid.
 
 | Artifact | Purpose | Location |
 |----------|---------|----------|
-| **Encryption Tests** | Verify AES/PBKDF2 | `tests/gics-encryption.test.ts` |
-| **Integrity Tests** | Verify hash chain | `tests/gics-integrity.test.ts` |
-| **Adversarial Tests**| Verify tampering rejection | `tests/gics-adversarial.test.ts` |
-| **Roundtrip Specs** | Bit-exact verification | `tests/gics-roundtrip.test.ts` |
+| **Golden Corpus** | Encrypted roundtrip, tamper, wrong-password | `tests/gics-golden-corpus.test.ts` |
+| **Format & Integrity** | Hash chain, version byte, stream sections | `tests/gics-v1.3-format.test.ts` |
+| **Adversarial Tests** | Tampering rejection, truncation, corruption | `tests/gics-adversarial.test.ts` |
+| **Generic Roundtrip** | Bit-exact schema + legacy verification | `tests/gics-generic-roundtrip.test.ts` |
+| **Integrity Regression** | Seed-based deterministic roundtrip | `tests/regression/integrity_mismatch.test.ts` |
+| **Forensics** | Cross-run determinism verification | `tests/gics-v1.3-forensics.test.ts` |
 
 ---
 
-*Document version: 1.3 | Updated: 2026-02-10*
+*Document version: 1.3 | Updated: 2026-02-11*

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { crc32 as nodeCrc32 } from 'node:zlib';
 
 /**
  * Utility for hash chain generation and verification.
@@ -33,12 +34,6 @@ export class IntegrityChain {
         return new Uint8Array(this.currentHash);
     }
 }
-
-/**
- * Basic CRC32 implementation or wrapper if needed.
- * Note: node:zlib has crc32 but it might vary by version.
- */
-import { crc32 as nodeCrc32 } from 'node:zlib';
 
 export function calculateCRC32(data: Uint8Array): number {
     return nodeCrc32(data);
