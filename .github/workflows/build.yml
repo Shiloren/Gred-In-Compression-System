@@ -16,6 +16,10 @@ jobs:
   sonarqube:
     name: SonarQube
     runs-on: ubuntu-latest
+    env:
+      # Expose as env so we can safely test presence in `if:` expressions.
+      SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+      SONAR_HOST_URL: https://sonarcloud.io
     steps:
       - uses: actions/checkout@v4
         with:
@@ -37,21 +41,34 @@ jobs:
         run: npm test
         continue-on-error: true
 
+      - name: Sonar scan precheck
+        if: always()
+        run: |
+          if [ -z "$SONAR_TOKEN" ]; then
+            echo "SONAR_TOKEN secret is NOT set. Sonar scan will be skipped (common on forks/PRs or if the secret is missing)."
+          else
+            echo "SONAR_TOKEN secret is set. Sonar scan will run."
+          fi
+
       - name: SonarQube Scan
+        if: ${{ env.SONAR_TOKEN != '' }}
         uses: SonarSource/sonarqube-scan-action@v6
         env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          # Required for SonarCloud.
-          SONAR_HOST_URL: https://sonarcloud.io
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
+
+      - name: SonarQube Scan (skipped)
+        if: ${{ env.SONAR_TOKEN == '' }}
+        run: echo "Skipping Sonar scan because SONAR_TOKEN is missing."
 
       # Optional convenience: print Quality Gate + a short list of issues into the GH Actions logs.
       # This lets us review the findings without manually opening SonarCloud.
       - name: SonarCloud Summary (Quality Gate + top issues)
-        if: always()
+        if: ${{ env.SONAR_TOKEN != '' }}
         continue-on-error: true
         env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: https://sonarcloud.io
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+          SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}
           SONAR_PROJECT_KEY: Shiloren_Gred-In-Compression-System
           SONAR_BRANCH: ${{ github.ref_name }}
         run: |
@@ -123,3 +140,7 @@ jobs:
               line=it.get('line')
               print(f"{i:02d}. [{sev}][{typ}] {comp}:{line} - {msg} ({rule})")
           PY
+
+      - name: SonarCloud Summary (skipped)
+        if: ${{ env.SONAR_TOKEN == '' }}
+        run: echo "Skipping SonarCloud summary because SONAR_TOKEN is missing."
