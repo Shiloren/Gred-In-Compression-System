@@ -92,7 +92,6 @@ export function encodeRLE(values: number[]): Uint8Array {
  */
 export function decodeRLE(data: Uint8Array): number[] {
     const runs = decodeVarint(data);
-    const values: number[] = [];
 
     // Guard: RLE runs must be pairs (count, value)
     if (runs.length % 2 !== 0) {
@@ -101,12 +100,20 @@ export function decodeRLE(data: Uint8Array): number[] {
     }
 
     const pairCount = Math.floor(runs.length / 2);
+
+    let totalSize = 0;
+    for (let i = 0; i < pairCount; i++) {
+        totalSize += runs[i * 2];
+    }
+
+    const values = new Array<number>(totalSize);
+    let offset = 0;
+
     for (let i = 0; i < pairCount; i++) {
         const count = runs[i * 2];
         const val = runs[i * 2 + 1];
-        for (let j = 0; j < count; j++) {
-            values.push(val);
-        }
+        values.fill(val, offset, offset + count);
+        offset += count;
     }
 
     return values;
