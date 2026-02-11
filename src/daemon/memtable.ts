@@ -51,7 +51,8 @@ export class MemTable {
             // Estimate size delta (very rough for now)
             const oldSize = this.estimateRecordSize(existing);
 
-            existing.fields = { ...existing.fields, ...fields };
+            // Replace full payload to avoid stale-field leakage across updates.
+            existing.fields = { ...fields };
             existing.updated = now;
             if (!existing.dirty) {
                 existing.dirty = true;

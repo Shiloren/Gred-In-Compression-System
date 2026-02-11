@@ -19,6 +19,11 @@
     "scripts": {
         "build": "tsc",
         "test": "vitest run",
+        "test:coverage": "vitest run --coverage",
+        "test:daemon:critical": "vitest run tests/daemon-memtable.test.ts tests/daemon-recovery.test.ts tests/daemon-wal.test.ts tests/daemon-file-lock.test.ts tests/daemon-realworld-soak.test.ts",
+        "quality:compression": "node bench/scripts/validate-compression-report.mjs",
+        "quality:check": "npm run test:daemon:critical && npm run test:coverage && npm run bench:forensics:verify && npm run quality:compression",
+        "quality:sonar:prep": "npm run test:coverage && npm run bench:forensics:verify && npm run quality:compression",
         "prepublishOnly": "npm run build",
         "bench": "tsx bench/scripts/harness.ts && tsx bench/scripts/gen-report.ts",
         "bench:empirical": "tsx bench/scripts/empirical.ts",
@@ -38,7 +43,8 @@
         "zstd-codec": "^0.1.5"
     },
     "devDependencies": {
-        "@eslint/js": "^10.0.1",
+        "@vitest/coverage-v8": "^4.0.18",
+        "@eslint/js": "^9.39.2",
         "@types/node": "^20.10.0",
         "@typescript-eslint/eslint-plugin": "^8.55.0",
         "@typescript-eslint/parser": "^8.55.0",

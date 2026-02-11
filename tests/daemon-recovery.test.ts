@@ -90,6 +90,16 @@ async function openPingConnection(socketPath: string, id: number): Promise<RpcRe
     return rpcCall(socketPath, { method: 'ping', id });
 }
 
+function stripPresenceFields(fields: Record<string, number | string> | undefined): Record<string, number | string> | undefined {
+    if (!fields) return fields;
+    const out: Record<string, number | string> = {};
+    for (const [k, v] of Object.entries(fields)) {
+        if (k.startsWith('__gics_p__')) continue;
+        out[k] = v;
+    }
+    return out;
+}
+
 describe('GICSDaemon WAL recovery (Phase 1.2 bootstrap)', () => {
     it.each(['binary', 'jsonl'] as const)('reconstruye MemTable tras reinicio usando WAL (%s)', async (walType) => {
         await withTempDir(async (baseDir) => {
@@ -337,7 +347,7 @@ describe('GICSDaemon WAL recovery (Phase 1.2 bootstrap)', () => {
             const snapshots = await decoder.getAllGenericSnapshots();
             expect(snapshots.length).toBeGreaterThan(0);
             const latest = snapshots[snapshots.length - 1];
-            expect(latest.items.get('item:shared')).toEqual({ value: 2, tag: 'new' });
+            expect(stripPresenceFields(latest.items.get('item:shared'))).toEqual({ value: 2, tag: 'new' });
 
             await daemon.stop();
         });
@@ -442,7 +452,7 @@ describe('GICSDaemon WAL recovery (Phase 1.2 bootstrap)', () => {
                 const snapshots = await okDecoder.getAllGenericSnapshots();
                 expect(snapshots.length).toBeGreaterThan(0);
                 const latest = snapshots[snapshots.length - 1];
-                expect(latest.items.get('secure:item')).toEqual({ value: 77, tag: 'secure' });
+                expect(stripPresenceFields(latest.items.get('secure:item'))).toEqual({ value: 77, tag: 'secure' });
 
                 await daemon.stop();
             } finally {

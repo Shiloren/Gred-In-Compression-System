@@ -55,6 +55,7 @@ export class GICSDaemon {
     private readonly insightPersistence = new InsightPersistence();
     private readonly subscriptions = new Map<string, { socket: net.Socket; events: string[] }>();
     private static readonly INSIGHT_SEGMENT_PREFIX = 'insight-';
+    private static readonly PRESENCE_PREFIX = '__gics_p__';
 
     constructor(config: GICSDaemonConfig) {
         this.config = config;
@@ -287,21 +288,45 @@ export class GICSDaemon {
         }
 
         if (!winner) return null;
-        return { key, fields: winner.fields, tier };
+        return { key, fields: this.restoreOriginalFieldShape(winner.fields), tier };
+    }
+
+    private restoreOriginalFieldShape(fields: Record<string, number | string>): Record<string, number | string> {
+        const restored: Record<string, number | string> = {};
+        const presence = new Map<string, number>();
+
+        for (const [k, v] of Object.entries(fields)) {
+            if (!k.startsWith(GICSDaemon.PRESENCE_PREFIX)) {
+                restored[k] = v;
+                continue;
+            }
+
+            const target = k.slice(GICSDaemon.PRESENCE_PREFIX.length);
+            presence.set(target, typeof v === 'number' ? v : Number(v));
+        }
+
+        for (const [fieldName, flag] of presence.entries()) {
+            if (flag === 0) {
+                delete restored[fieldName];
+            }
+        }
+
+        return restored;
     }
 
     private inferSchemaAndSnapshot(records: ReturnType<MemTable['scan']>): {
         schema: SchemaProfile;
         snapshot: GenericSnapshot<Record<string, number | string>>;
     } {
-        const inferredSchema = this.inferSchemaFromFields(records.map((rec) => rec.fields));
+        const serialized = records.map((rec) => this.serializeRecordWithPresence(rec.fields));
+        const inferredSchema = this.inferSchemaFromFields(serialized);
 
         const items = new Map<string, Record<string, number | string>>();
         let snapshotTimestamp = Date.now();
 
         for (const rec of records) {
             snapshotTimestamp = Math.max(snapshotTimestamp, rec.updated);
-            items.set(rec.key, { ...rec.fields });
+            items.set(rec.key, this.serializeRecordWithPresence(rec.fields));
         }
 
         return {
@@ -311,6 +336,17 @@ export class GICSDaemon {
                 items
             }
         };
+    }
+
+    private serializeRecordWithPresence(fields: Record<string, number | string>): Record<string, number | string> {
+        const out: Record<string, number | string> = { ...fields };
+        const keySet = new Set(Object.keys(fields));
+
+        for (const fieldName of keySet) {
+            out[`${GICSDaemon.PRESENCE_PREFIX}${fieldName}`] = 1;
+        }
+
+        return out;
     }
 
     private inferSchemaFromFields(allFields: Array<Record<string, number | string>>): SchemaProfile {

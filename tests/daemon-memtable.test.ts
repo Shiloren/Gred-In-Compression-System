@@ -19,7 +19,7 @@ describe('MemTable (Roadmap v1.3.2 - Fase 1.1)', () => {
         expect(mem.sizeBytes).toBeGreaterThan(0);
     });
 
-    it('mergea updates de fields, incrementa updated y no duplica dirtyCount', async () => {
+    it('reemplaza fields en updates, incrementa updated y no duplica dirtyCount', async () => {
         const mem = new MemTable();
 
         mem.put('item:1', { a: 1, b: 'x' });
@@ -30,7 +30,7 @@ describe('MemTable (Roadmap v1.3.2 - Fase 1.1)', () => {
         const after = mem.get('item:1');
 
         expect(after).toBeDefined();
-        expect(after!.fields).toEqual({ a: 2, b: 'x', c: 'new' });
+        expect(after!.fields).toEqual({ a: 2, c: 'new' });
         expect(after!.updated).toBeGreaterThanOrEqual(before!.updated);
         expect(mem.count).toBe(1);
         expect(mem.dirtyCount).toBe(1);
