@@ -17,6 +17,6 @@ jobs:
         node-version: '20.x'
     - run: npm install
     - name: Run Audit Runner
-      run: npx tsx bench/sensitive/audit_runner.ts
+      run: npm run bench:forensics
     - name: Run Audit Verifier
-      run: npx tsx bench/sensitive/audit_verifier.ts
+      run: npm run bench:forensics:verify
