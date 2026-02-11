@@ -10,7 +10,8 @@
 |---------|--------|----------|-------|
 | **v1.1.0** | 🏛️ Archived | `GICS-ARCHIVE/versions/v1.1/frozen/` | Original frozen implementation |
 | **v1.2.0** | 🏛️ Archived | `GICS-ARCHIVE/versions/v1.2/` | Verification suite + legacy formats |
-| **v1.3.0** | ✅ Production | **This repository** | Current stable version with Encryption + Schema |
+| **v1.3.1** | ✅ Production | **This repository** | Stable core (Schema + Encryption) |
+| **v1.3.2** | ✅ Release | `dev/v1.3.2` | The Cognitive Storage Engine (Daemon + Insight) |
 
 ---
 
@@ -39,6 +40,17 @@ Legacy files from the v1.3 development cycle (hybrid prototypes, v1.2-era tests,
 - **v1.3 legacy files** archived at `GICS-ARCHIVE/versions/v1.3-legacy/`.
 - **v1.3.0** is the current source of truth.
 
+## v1.3.2 — The Cognitive Storage Engine
+Released from `dev/v1.3.2` branch.
+- **Key Features**:
+  - **Daemon Mode**: Persistent process with MemTable, WAL, IPC (JSON-RPC 2.0)
+  - **Tier Engine**: HOT/WARM/COLD with auto-flush, compaction, rotation, tier index
+  - **Insight Engine**: Behavioral Tracker (velocity, entropy, volatility, streaks, fieldTrends, lifecycle), Correlation Analyzer (co-movement, clusters, leading indicators, seasonal patterns), Predictive Signals (anomaly detection, trend forecasting, recommendations)
+  - **File Locking**: Cross-platform shared/exclusive locks for concurrent access
+  - **Python Client SDK**: Zero-dependency sync/async client with connection pooling
+  - **Zero new runtime dependencies**: All intelligence uses pure incremental statistics
+- **Roadmap**: See [GICS_ROADMAP_v1_3_2.md](./roadmaps/GICS_ROADMAP_v1_3_2.md)
+
 ---
 
-*Document version: 1.3 | Updated: 2026-02-11*
+*Document version: 1.3.2 | Updated: 2026-02-11*

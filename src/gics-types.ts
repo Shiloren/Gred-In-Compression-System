@@ -310,8 +310,8 @@ export interface GICSBlockHeader {
     payloadSize: number;
     /** CRC32 checksum of payload (4 bytes) */
     crc32: number;
-    /** Continuous heat metric 0-1 (v1.1+) */
-    heatScore?: number;
+    /** Continuous activity metric 0-1 (v1.1+) */
+    activityScore?: number;
 }
 
 /**
@@ -323,13 +323,13 @@ export interface GICSBlock {
 }
 
 /**
- * Heat score result for market intelligence (v1.1+)
+ * Activity score result for market analysis (v1.1+)
  */
-export interface HeatScoreResult {
+export interface ActivityScoreResult {
     /** Item ID */
     itemId: number;
-    /** Continuous heat score 0-1 */
-    heatScore: number;
+    /** Continuous activity score 0-1 */
+    activityScore: number;
     /** Component breakdown for debugging/display */
     components: {
         /** Price volatility (coefficient of variation) */
@@ -348,7 +348,7 @@ export interface HeatScoreResult {
 /**
  * Item tier classification based on change frequency
  */
-export type ItemTier = 'hot' | 'warm' | 'cold' | 'ultra_sparse';
+export type ItemTier = 'active' | 'stable' | 'inactive' | 'rare_occurrence';
 
 /**
  * Time range for sparse queries
@@ -366,10 +366,10 @@ export interface GICSHybridConfig extends GICSConfig {
     blockDurationDays?: number;
     /** Tier classification thresholds */
     tierThresholds?: {
-        /** Change rate to be HOT (default: 0.8 = 80%) */
-        hotChangeRate: number;
-        /** Change rate to be WARM (default: 0.2 = 20%) */
-        warmChangeRate: number;
+        /** Change rate to be ACTIVE (default: 0.8 = 80%) */
+        activeChangeRate: number;
+        /** Change rate to be STABLE (default: 0.2 = 20%) */
+        stableChangeRate: number;
     };
 }
 
@@ -435,17 +435,17 @@ export interface SnapshotResult {
     }>;
 }
 
-export interface MarketIntelResult {
+export interface MarketAnalysisResult {
     timestamp: number;
     totalItems: number;
-    hotItems: Array<{
+    activeItems: Array<{
         itemId: number;
         volatility: number;
         trend: TrendDirection;
         trendPercent: number;
     }>;
-    warmItems: number;
-    coldItems: number;
+    stableItems: number;
+    inactiveItems: number;
     topGainers: Array<{
         itemId: number;
         changePercent: number;

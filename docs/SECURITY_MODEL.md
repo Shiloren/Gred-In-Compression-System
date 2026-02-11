@@ -23,16 +23,12 @@ CORRUPTED     → IntegrityError (SHA-256 or CRC32 failure)
 WRONG PWD     → AuthenticationError (PBKDF2/HMAC check)
 ```
 
-### 3. Native Encryption (New in v1.3)
-GICS v1.3 implements industry-standard encryption directly in the wire format.
-- **Algorithm**: AES-256-GCM (Galois/Counter Mode).
-- **KDF**: PBKDF2-HMAC-SHA256 with 100,000 iterations.
-- **Key Rotation**: Every file has a unique salt and file-level nonce.
-- **Authentication**: GCM Authentication Tags per StreamSection + password verification via HMAC.
-
----
-
-## 🛡️ Threat Model
+## 🔐 Internal Data Integrity Chain
+GICS v1.3 uses an internal data integrity chain to ensure every byte is valid.
+1. **Block Level**: Verified during decompression.
+2. **Section Level**: AES-GCM tag (if encrypted) + SectionHash.
+3. **Segment Level**: Cumulative `RootHash` (SHA-256) updated after every section.
+4. **File Level**: Final EOS marker contains the global state hash.
 
 ### In-Scope Threats
 | Threat | Mitigation |

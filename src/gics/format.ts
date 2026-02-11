@@ -34,6 +34,8 @@ export enum HealthTag {
 
 export interface HeaderV3 {
     magic: Uint8Array; // "GICS"
+    /** Continuous activity metric 0-1 (v1.1+) */
+    activityScore?: number;
     version: number;   // 3
     flags: number;
     streamCount: number;

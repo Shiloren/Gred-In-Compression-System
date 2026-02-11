@@ -189,7 +189,7 @@ await enc.sealToFile();
 | Fase | Objetivo | Estado | PR/Commit | Owner | Fecha | Notas |
 |---|---|---|---|---|---|---|
 | 1 | Foundation / hygiene | ✅ |  |  | 2026-02-08 | Gates OK: `npm run build` + `npm test` (131 passed, 2 skipped). Fixes de determinismo/robustez en v1.2 + CHM. |
-| 2 | Bug fixes (133/133) | ✅ |  |  | 2026-02-08 | Gates OK: `npm run build` + `npm test` (**133 passed, 0 skipped**). Fixed import paths + determinism test + **enabled corruption tests**. EXCELENCIA: cero mediocridad. |
+| 2 | Bug fixes (133/133) | ✅ |  |  | 2026-02-08 | Gates OK: `npm run build` + `npm test` (**133 passed, 0 skipped**). Fixed import paths + determinism test + **enabled corruption tests**. |
 | 3 | Formato v1.3 (stream sections + outer + chain) | ✅ |  |  | 2026-02-08 | Gates OK: `npm run build` + `npm test` (**145/145 passed**). StreamSections + Zstd outer + SHA-256 hash chain + strict/warn modes + 12 nuevos tests v1.3. |
 | 3.1 | Segmentación + index + append FileHandle | ✅ |  |  | 2026-02-08 | Gates OK: `npm run build` + `npm test` (**149/149 passed**). SegmentHeader/Footer + Bloom Index + Append logic + FileAccess. Independent segments. |
 | 4 | Trial-based codec (todos los streams) | ✅ |  |  | 2026-02-08 | Gates OK: `npm run build` + `npm test` (**149/149 passed**). Full trial selection for all streams. Improved ratios. |
@@ -202,7 +202,7 @@ await enc.sealToFile();
 
 | 10 | SonarQube & Code Cleanup | ✅ |  |  | 2026-02-08 | Target: 0 lint issues, <5% duplication. Cleaned up unused imports and refactored test complexity. |
 
-| 11 | Bench forensics (future-proof) + KPI CORE/QUARANTINE + "anti-monstruo" en QUARANTINE | ✅ |  |  | 2026-02-10 | Implementado codec no-expansivo en QUARANTINE (`FIXED64_LE`) + harness forense. Contract: `Structured_TrendNoise core_ratio=186.13 (min=50)` + determinismo OK. |
+| 11 | Bench forensics (future-proof) + KPI CORE/QUARANTINE + non-expansive codec in QUARANTINE | ✅ |  |  | 2026-02-10 | Implementado codec no-expansivo en QUARANTINE (`FIXED64_LE`) + harness forense. Contract: `Structured_TrendNoise core_ratio=186.13 (min=50)` + determinismo OK. |
 
 | 12 | Renombrado profesional (de-marketing) — nomenclatura de funciones/APIs | ⬜ |  |  |  | Eliminar términos “marketing / cachondeo” y estandarizar naming con calidad ingenieril. |
 
@@ -519,7 +519,7 @@ Checklist:
 
 ---
 
-### Fase 11 — Bench Forensics (future-proof) + KPI CORE/QUARANTINE + “anti-monstruo”
+### Fase 11 — Bench Forensics (future-proof) + KPI CORE/QUARANTINE + Non-expansive codec in QUARANTINE
 
 **Motivación**
 
@@ -558,7 +558,7 @@ Y un verificador con “contract thresholds” por dataset.
    - `Structured_TrendNoise`: **core_ratio >= 50×** (mínimo producto), 100× aspiracional.
    - `HighEntropy_Random`: no se exige 50×; se exige **degradación controlada** y límites anti-expansión.
 
-4) **“Anti-monstruo” en QUARANTINE (degradación controlada)**
+4. **Non-expansive codec in QUARANTINE (degradación controlada)**
    - Problema: el fallback actual de QUARANTINE (varints) puede inflar tamaño en alta entropía.
    - Solución propuesta: añadir un codec QUARANTINE no-expansivo (p.ej. `FIXED32_LE` o `FIXED64_LE`) para acotar crecimiento.
    - Resultado esperado:
@@ -656,7 +656,7 @@ npm run verify
 - [x] **Contrato de producto (KPI CORE-only)**: `core_ratio >= 50×` en dataset forense `Structured_TrendNoise`.
   - Este KPI se calcula como: `core_input_bytes/core_output_bytes`.
   - **100×** queda como objetivo aspiracional (no gate de release).
-- [x] **Damage cap QUARANTINE (anti-monstruo)**: bajo ataque/ruido (p.ej. `HighEntropy_Random`), QUARANTINE debe ser **no-expansivo** y con degradación controlada.
+- [x] **Damage cap QUARANTINE (degradación controlada)**: bajo ataque/ruido (p.ej. `HighEntropy_Random`), QUARANTINE debe ser **no-expansivo** y con degradación controlada.
   - Mínimo (no-expansivo): `quarantine_output_bytes <= quarantine_input_bytes` (⇒ `quarantine_ratio >= 1.0×`).
   - Objetivo recomendado (cota fuerte): `quarantine_ratio >= 2.0×` cuando sea viable (ej. fallback tipo `FIXED32_LE`).
   - Además reportar obligatoriamente: `quarantine_block_rate` y `quarantine_byte_rate`.

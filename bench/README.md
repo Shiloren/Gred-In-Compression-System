@@ -1,32 +1,81 @@
 # GICS Benchmark Suite
 
-This directory contains the empirical benchmark suite for the GICS compression system.
+This directory contains two complementary benchmark paths:
 
-## Reproducibility Contract
-1. **Deterministic Inputs**: All datasets are generated via seeded RNG.
-2. **Environment Recording**: Every result records CPU, RAM, OS, and software versions.
-3. **No Hidden State**: Each benchmark run isolates variables as much as possible.
-4. **Data Integrity**: All outputs are verified for correctness before measuring performance.
+1. **Exploratory harness** (`bench/scripts/harness.ts`) for iterative performance analysis.
+2. **Empirical fail-state gate** (`bench/scripts/empirical.ts`) for objective acceptance checks.
+
+---
+
+## Fail-State Contract (Hard Gate)
+
+The empirical benchmark is considered **PASS** only if all the following are true:
+
+1. **Critical weighted compression ratio (GICS) >= 50x**
+2. **Integrity validation is 100%** on all critical datasets
+3. No benchmark runtime error occurred
+
+If any condition fails, the process exits non-zero and CI must fail.
+
+> Threshold can be overridden with `GICS_MIN_RATIO_X` (default `50`).
+
+---
 
 ## Usage
 
-### Run All (Recommended)
+### 1) Hard gate (recommended for release/CI)
+
+```bash
+npm run bench:gate
+```
+
+Outputs:
+- `bench/results/latest/empirical-report.json`
+- `bench/results/latest/empirical-report.md`
+- `bench/results/empirical-<timestamp>.json`
+
+### 2) Empirical run (same engine, local analysis)
+
+```bash
+npm run bench:empirical
+```
+
+### 2.b) Strict empirical audit (A/B/C, protobuf+msgpack+arrow+structured-binary)
+
+```bash
+npm run bench:strict
+```
+
+Outputs:
+- `bench/results/latest/empirical-strict-report.json`
+- `bench/results/latest/empirical-strict-report.txt`
+- `bench/results/empirical-strict-<timestamp>.json`
+
+### 3) Legacy exploratory benchmark + report
+
+```bash
+npm run bench
+```
+
+Or:
+
 ```powershell
 ./bench/scripts/run-all.ps1
 ```
-This script will:
-1. Generate datasets (in memory).
-2. Run the harness for all active workloads.
-3. Save results to `bench/results/*.json`.
-4. Generate `bench/report.md`.
 
-### Run Manually
-```bash
-npx tsx bench/scripts/harness.ts
-npx tsx bench/scripts/gen-report.ts
-```
+---
+
+## Reproducibility Contract
+
+1. **Deterministic inputs** where seeded generation is used.
+2. **Environment recorded** (OS/CPU/Node/git commit in empirical report).
+3. **Structured output** (JSON + Markdown) for auditability.
+4. **Integrity checked** for GICS and baseline decode flow.
+
+---
 
 ## Structure
-- `scripts/`: Implementation of harness, generators, and reporting.
-- `results/`: Machine-generated JSON result files.
-- `spec.md`: Detailed specification of workloads and datasets.
+
+- `scripts/`: benchmark engines, datasets, comparators, reporting.
+- `results/`: machine-generated outputs and latest artifacts.
+- `spec.md`: benchmark scenario notes.

@@ -88,3 +88,19 @@ export const GICS = {
 };
 
 export default GICS;
+
+// v1.3.2: Daemon and Insight Engine modules
+export { GICSDaemon } from './daemon/server.js';
+export type { GICSDaemonConfig } from './daemon/server.js';
+export { MemTable } from './daemon/memtable.js';
+export type { MemRecord, MemTableConfig } from './daemon/memtable.js';
+export { FileLock } from './daemon/file-lock.js';
+export { InsightTracker } from './insight/tracker.js';
+export type { ItemBehavior, FieldTrend, LifecycleStage, InsightTrackerConfig } from './insight/tracker.js';
+export { CorrelationAnalyzer } from './insight/correlation.js';
+export type { Correlation, Cluster, LeadingIndicator, SeasonalPattern } from './insight/correlation.js';
+export { PredictiveSignals } from './insight/signals.js';
+export type { Anomaly, TrendForecast, Recommendation } from './insight/signals.js';
+export { ConfidenceTracker } from './insight/confidence.js';
+export type { InsightConfidence, Outcome } from './insight/confidence.js';
+export { InsightPersistence } from './insight/persistence.js';
