@@ -658,17 +658,28 @@ export class GICSv2Encoder {
         let bestEncoded: Uint8Array | null = null;
         let bestCodec: InnerCodecId = InnerCodecId.VARINT_DELTA;
 
+        let contextDirty = false;
+
         for (const cand of candidates) {
-            ctx.restore(snapshot);
+            if (contextDirty) {
+                ctx.restore(snapshot);
+                contextDirty = false;
+            }
             const encoded = cand.encode(chunk);
             if (bestEncoded === null || encoded.length < bestEncoded.length) {
                 bestEncoded = encoded;
                 bestCodec = cand.id;
             }
+
+            if (cand.id === InnerCodecId.DICT_VARINT) {
+                contextDirty = true;
+            }
         }
 
         // Final commit
-        ctx.restore(snapshot);
+        if (contextDirty) {
+            ctx.restore(snapshot);
+        }
         const bestCand = candidates.find(c => c.id === bestCodec)!;
         const finalEncoded = bestCand.encode(chunk);
 
@@ -898,17 +909,28 @@ export class GICSv2Encoder {
             }
         }
 
+        let contextDirty = false;
+
         for (const cand of candidates) {
-            ctx.restore(stateSnapshot);
+            if (contextDirty) {
+                ctx.restore(stateSnapshot);
+                contextDirty = false;
+            }
             const encoded = cand.encode();
             if (bestEncoded === null || encoded.length < bestEncoded.length) {
                 bestEncoded = encoded;
                 bestCodec = cand.id;
             }
+
+            if (cand.id === InnerCodecId.DICT_VARINT) {
+                contextDirty = true;
+            }
         }
 
         // Trial leaves context restored
-        ctx.restore(stateSnapshot);
+        if (contextDirty) {
+            ctx.restore(stateSnapshot);
+        }
 
         if (!bestEncoded) {
             return {
