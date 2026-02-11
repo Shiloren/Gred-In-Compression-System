@@ -53,6 +53,11 @@ jobs:
       - name: SonarQube Scan
         if: ${{ env.SONAR_TOKEN != '' }}
         uses: SonarSource/sonarqube-scan-action@v6
+        with:
+          # Pin org + projectKey explicitly so the scan never “drifts” due to autodetection.
+          args: >
+            -Dsonar.organization=shiloren
+            -Dsonar.projectKey=Shiloren_Gred-In-Compression-System
         env:
           SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
           SONAR_HOST_URL: ${{ env.SONAR_HOST_URL }}

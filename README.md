@@ -202,7 +202,7 @@ npm run verify
 
 This repository contains a GitHub Actions workflow at:
 
-- `.github/workflows/sonar.yml`
+- `.github/workflows/build.yml`
 
 To enable automatic scans on push / PR:
 
@@ -214,6 +214,12 @@ To enable automatic scans on push / PR:
    - and set the correct `sonar.organization` value for your SonarCloud org.
 
 After that, you should see the workflow running in **GitHub → Actions**.
+
+### SonarLint (IDE) — optional
+
+This repo **does not force SonarLint Connected Mode** (to avoid breaking other machines).
+
+If you want Connected Mode locally, see: `docs/SONARLINT_CONNECTED_MODE.md`.
 
 ---
 
