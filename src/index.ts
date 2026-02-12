@@ -11,8 +11,11 @@ import type { GICSv2EncoderOptions, GICSv2DecoderOptions } from './gics/types.js
 
 // Re-export specific types and errors
 export type { Snapshot, GenericSnapshot, SchemaProfile, FieldDef } from './gics-types.js';
-export type { GICSv2EncoderOptions as EncoderOptions, GICSv2DecoderOptions as DecoderOptions, GICSv2Logger as Logger } from './gics/types.js';
+export type { GICSv2EncoderOptions as EncoderOptions, GICSv2DecoderOptions as DecoderOptions, GICSv2Logger as Logger, CompressionPreset } from './gics/types.js';
+export { COMPRESSION_PRESETS } from './gics/types.js';
 export { IncompleteDataError, IntegrityError } from './gics/errors.js';
+export { CompressionProfiler } from './gics/profiler.js';
+export type { ProfileResult, ProfileMode, TrialResult, ProfileMeta } from './gics/profiler.js';
 
 import type { SchemaProfile } from './gics-types.js';
 
@@ -88,3 +91,19 @@ export const GICS = {
 };
 
 export default GICS;
+
+// v1.3.2: Daemon and Insight Engine modules
+export { GICSDaemon } from './daemon/server.js';
+export type { GICSDaemonConfig } from './daemon/server.js';
+export { MemTable } from './daemon/memtable.js';
+export type { MemRecord, MemTableConfig } from './daemon/memtable.js';
+export { FileLock } from './daemon/file-lock.js';
+export { InsightTracker } from './insight/tracker.js';
+export type { ItemBehavior, FieldTrend, LifecycleStage, InsightTrackerConfig } from './insight/tracker.js';
+export { CorrelationAnalyzer } from './insight/correlation.js';
+export type { Correlation, Cluster, LeadingIndicator, SeasonalPattern } from './insight/correlation.js';
+export { PredictiveSignals } from './insight/signals.js';
+export type { Anomaly, TrendForecast, Recommendation } from './insight/signals.js';
+export { ConfidenceTracker } from './insight/confidence.js';
+export type { InsightConfidence, Outcome } from './insight/confidence.js';
+export { InsightPersistence } from './insight/persistence.js';

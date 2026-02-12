@@ -13,6 +13,55 @@ permissions:
   pull-requests: read
 
 jobs:
+  benchmark-gate:
+    name: Benchmark Gate (Empirical)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Run empirical benchmark gate (50x)
+        run: npm run bench:gate
+
+      - name: Run dedicated 50x guarantee validation
+        run: npm run bench:validate-50x
+
+      - name: Run empirical security benchmark gate
+        run: npm run bench:security
+
+      - name: Run empirical edge-case benchmark gate
+        run: npm run bench:edge-cases
+
+      - name: Run empirical codec-stats benchmark gate
+        run: npm run bench:codec-stats
+
+      - name: Upload benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: empirical-benchmark-report
+          path: |
+            bench/results/latest/empirical-report.json
+            bench/results/latest/empirical-report.md
+            bench/results/latest/empirical-strict-report.json
+            bench/results/latest/empirical-strict-report.txt
+            bench/results/latest/validate-50x-report.json
+            bench/results/latest/validate-50x-report.md
+            bench/results/latest/empirical-security-report.json
+            bench/results/latest/empirical-security-report.md
+            bench/results/latest/empirical-edge-cases-report.json
+            bench/results/latest/empirical-edge-cases-report.md
+            bench/results/latest/empirical-codec-stats-report.json
+            bench/results/latest/empirical-codec-stats-report.md
+
   sonarqube:
     name: SonarQube
     runs-on: ubuntu-latest
